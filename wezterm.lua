@@ -568,7 +568,9 @@ wezterm.on('gui-startup', function()
     args      = shell,
   }
   tab:set_title('Work')
-  win:gui_window():maximize()
+
+  -- maximize() can fail in mux-connect mode; pcall keeps the split alive
+  pcall(function() win:gui_window():maximize() end)
 
   -- Right pane (50/50 split)
   left:split { direction = 'Right', size = 0.5, args = shell }
