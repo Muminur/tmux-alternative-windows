@@ -612,7 +612,7 @@ config.show_update_window                       = false
 config.exit_behavior                            = 'CloseOnCleanExit'
 config.exit_behavior_messaging                  = 'Verbose'
 config.selection_word_boundary                  = ' \t\n{}[]()"\''
-config.enable_kitty_keyboard                    = true
+config.enable_kitty_keyboard                    = false  -- true breaks leader key on Windows
 config.adjust_window_size_when_changing_font_size = false
 
 return config
