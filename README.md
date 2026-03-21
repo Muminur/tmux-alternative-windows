@@ -180,6 +180,19 @@ Connect manually from a new terminal window:
 wezterm connect mux
 ```
 
+This also correctly initialises the `main` workspace with a 2-pane layout when the mux server starts fresh — whether you open WezTerm normally or run `wezterm connect mux` from an external terminal.
+
+### Safely closing WezTerm (preserving your session)
+
+| Action | What happens | Session preserved? |
+|--------|-------------|-------------------|
+| Close the WezTerm **window** (X button / Alt+F4) | GUI closes, mux server keeps running | ✅ Yes |
+| Open WezTerm again | Auto-reconnects to running mux server, all panes intact | ✅ Yes |
+| Say **Yes** to "kill all panes?" | Processes are killed, session is gone | ❌ No |
+| `CTRL+D` in a shell | Exits that shell, closes that pane only | ❌ That pane |
+
+**Rule of thumb:** To preserve your session, always close the WezTerm **window** — never say "yes" to killing panes. The mux server (`wezterm-mux-server.exe`) continues running in the background and your panes stay alive.
+
 > **Note:** If you see `pane id 0 not found in mux` errors in the status bar after reconnecting, this is fixed in the current config — `get_foreground_process_name()` is now wrapped in `pcall()` so stale pane references after mux reconnect no longer crash the status bar.
 
 To disable auto-attach and use WezTerm without the persistent mux, comment out this line in `wezterm.lua`:

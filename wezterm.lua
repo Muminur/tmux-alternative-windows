@@ -558,15 +558,17 @@ function spawn_agent_layout(root_pane)
 end
 
 -- ============================================================
--- GUI STARTUP
---   Opens 2 panes side by side (left + right).
---   Press LEADER+A any time to expand into the full 7-pane
---   Claude Code agent layout.
+-- MUX STARTUP
+--   Fires when the mux server initializes — including when the
+--   server is started via `wezterm connect mux` from an external
+--   terminal (gui-startup does NOT fire in that case).
+--   Creates the 'main' workspace with a 2-pane Work tab if it
+--   does not already exist.
 -- ============================================================
-wezterm.on('gui-startup', function()
+wezterm.on('mux-startup', function()
   local shell = pwsh and { pwsh, '-NoLogo' } or { 'powershell.exe', '-NoLogo' }
 
-  -- If 'main' workspace already exists, just activate it (reconnecting to saved session)
+  -- Guard: skip if 'main' workspace already exists
   local ok, names = pcall(mux.get_workspace_names)
   if ok and names then
     for _, name in ipairs(names) do
@@ -577,13 +579,40 @@ wezterm.on('gui-startup', function()
     end
   end
 
-  -- First run: spawn fresh 2-pane Work tab in 'main' workspace
-  -- (any 'default' window pre-created by the mux server is left in background)
-  local tab, left, win = mux.spawn_window { workspace = 'main', args = shell }
+  -- First run: create 'main' workspace with 2-pane Work tab
+  local tab, left, _ = mux.spawn_window { workspace = 'main', args = shell }
   tab:set_title('Work')
-  pcall(function() win:gui_window():maximize() end)
   left:split { direction = 'Right', size = 0.5, args = shell }
   mux.set_active_workspace('main')
+end)
+
+-- ============================================================
+-- GUI STARTUP
+--   Fires when the WezTerm GUI window opens.
+--   Workspace creation is handled by mux-startup above.
+--   This handler only maximizes the window and activates 'main'.
+-- ============================================================
+wezterm.on('gui-startup', function()
+  -- Maximize every mux window that has a GUI handle
+  local ok, wins = pcall(mux.all_windows)
+  if ok and wins then
+    for _, win in ipairs(wins) do
+      pcall(function()
+        local gwin = win:gui_window()
+        if gwin then gwin:maximize() end
+      end)
+    end
+  end
+  -- Activate 'main' workspace if it exists
+  local ok2, names = pcall(mux.get_workspace_names)
+  if ok2 and names then
+    for _, name in ipairs(names) do
+      if name == 'main' then
+        mux.set_active_workspace('main')
+        return
+      end
+    end
+  end
 end)
 
 -- ============================================================
@@ -609,6 +638,13 @@ config.exit_behavior                            = 'CloseOnCleanExit'
 config.exit_behavior_messaging                  = 'Verbose'
 config.selection_word_boundary                  = ' \t\n{}[]()"\''
 config.enable_kitty_keyboard                    = false  -- true breaks leader key on Windows
+-- Skip "kill process?" confirmation for common shells; just close the pane cleanly.
+-- To preserve your session across restarts: close the WezTerm WINDOW (X / Alt+F4).
+-- The mux server keeps running. Only say "yes" to kill-panes if you mean to end the session.
+config.skip_close_confirmation_for_processes_named = {
+  'powershell.exe', 'pwsh.exe', 'cmd.exe',
+  'bash.exe', 'bash', 'zsh', 'fish', 'nu.exe', 'wsl.exe',
+}
 config.adjust_window_size_when_changing_font_size = false
 
 return config
