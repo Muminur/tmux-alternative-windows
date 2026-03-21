@@ -187,7 +187,7 @@ end
 config.unix_domains = {
   { name = 'mux' },
 }
--- config.default_gui_startup_args = { 'connect', 'mux' }
+config.default_gui_startup_args = { 'connect', 'mux' }
 
 -- ============================================================
 -- SSH DOMAINS  — add your servers here
