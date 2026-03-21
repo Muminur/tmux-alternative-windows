@@ -563,18 +563,30 @@ end
 wezterm.on('gui-startup', function()
   local shell = pwsh and { pwsh, '-NoLogo' } or { 'powershell.exe', '-NoLogo' }
 
-  local tab, left, win = mux.spawn_window {
-    workspace = 'main',
-    args      = shell,
-  }
+  local wins = mux.all_windows()
+
+  if #wins > 0 then
+    -- connect-mux created a window already; use it instead of spawning a 2nd one
+    local w    = wins[1]
+    local tabs = w:tabs()
+    if #tabs > 0 then
+      local t     = tabs[1]
+      local panes = t:panes()
+      if #panes == 1 then
+        -- Fresh mux session: split the single pane into two
+        panes[1]:split { direction = 'Right', size = 0.5, args = shell }
+        t:set_title('Work')
+      end
+      -- >1 pane means we reconnected to an existing session — leave it alone
+    end
+    return
+  end
+
+  -- No windows at all: create the 2-pane layout from scratch
+  local tab, left, win = mux.spawn_window { workspace = 'main', args = shell }
   tab:set_title('Work')
-
-  -- maximize() can fail in mux-connect mode; pcall keeps the split alive
   pcall(function() win:gui_window():maximize() end)
-
-  -- Right pane (50/50 split)
   left:split { direction = 'Right', size = 0.5, args = shell }
-
   mux.set_active_workspace('main')
 end)
 
