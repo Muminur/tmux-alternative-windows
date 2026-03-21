@@ -193,7 +193,28 @@ This also correctly initialises the `main` workspace with a 2-pane layout when t
 
 **Rule of thumb:** To preserve your session, always close the WezTerm **window** — never say "yes" to killing panes. The mux server (`wezterm-mux-server.exe`) continues running in the background and your panes stay alive.
 
-> **Note:** If you see `pane id 0 not found in mux` errors in the status bar after reconnecting, this is fixed in the current config — `get_foreground_process_name()` is now wrapped in `pcall()` so stale pane references after mux reconnect no longer crash the status bar.
+### Session Persistence FAQ
+
+**Q: I closed WezTerm and my terminal output (ipconfig results, command output) is gone. Can I get it back?**
+
+No — terminal output cannot be restored after the mux server restarts. The scrollback buffer lives in RAM. Once the server exits (you said "yes" to killing panes, or the process crashed), the output is permanently gone. This is a fundamental property of all terminal multiplexers — tmux, screen, and WezTerm all behave the same way.
+
+To keep your output: close the WezTerm **window** (X / Alt+F4) instead of killing panes. The server stays running and all output is preserved.
+
+**Q: My typed commands are gone too — can I get those back?**
+
+Yes — PowerShell command history **is** preserved automatically by PSReadLine, regardless of WezTerm restarts. Press the **Up arrow** (↑) after reopening and your previous commands are still there.
+
+History is saved to:
+```
+%APPDATA%\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt
+```
+
+**Q: How much scrollback history is kept during a live session?**
+
+20 000 lines (configurable via `config.scrollback_lines` in `wezterm.lua`). Use `LEADER+f` to search the scrollback, or `CTRL+SHIFT+K` to clear it.
+
+> **Note:** If you see `pane id 0 not found in mux` errors in the status bar after reconnecting, this is fixed — `get_foreground_process_name()` is wrapped in `pcall()` so stale pane references no longer crash the status bar.
 
 To disable auto-attach and use WezTerm without the persistent mux, comment out this line in `wezterm.lua`:
 
