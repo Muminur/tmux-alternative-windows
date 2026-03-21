@@ -296,8 +296,8 @@ config.keys = {
   -- ── PANE MANAGEMENT ────────────────────────────────────────
   { key='z', mods='LEADER', action=act.TogglePaneZoomState },
   { key='x', mods='LEADER', action=act.CloseCurrentPane { confirm=true } },
-  { key='{', mods='LEADER', action=act.RotatePanes 'CounterClockwise' },
-  { key='}', mods='LEADER', action=act.RotatePanes 'Clockwise' },
+  { key='{', mods='LEADER|SHIFT', action=act.RotatePanes 'CounterClockwise' },
+  { key='}', mods='LEADER|SHIFT', action=act.RotatePanes 'Clockwise' },
   { key='o', mods='LEADER', action=act.PaneSelect },
   { key='q', mods='LEADER', action=act.PaneSelect { mode='SwapWithActiveKeepFocus' } },
 
@@ -305,7 +305,7 @@ config.keys = {
   { key='c', mods='LEADER', action=act.SpawnTab 'CurrentPaneDomain' },
   { key='n', mods='LEADER', action=act.ActivateTabRelative(1)  },
   { key='p', mods='LEADER', action=act.ActivateTabRelative(-1) },
-  { key='&', mods='LEADER', action=act.CloseCurrentTab { confirm=true } },
+  { key='&', mods='LEADER|SHIFT', action=act.CloseCurrentTab { confirm=true } },
   { key=',', mods='LEADER', action=act.PromptInputLine {
       description = 'Rename tab:',
       action = wezterm.action_callback(function(window, _, line)
@@ -326,7 +326,7 @@ config.keys = {
   -- ── WORKSPACES (like tmux sessions) ────────────────────────
   { key='w', mods='LEADER', action=act.ShowLauncherArgs { flags='FUZZY|WORKSPACES' } },
   { key='s', mods='LEADER', action=act.ShowLauncherArgs { flags='FUZZY|WORKSPACES|TABS|LAUNCH_MENU_ITEMS' } },
-  { key='$', mods='LEADER', action=act.PromptInputLine {
+  { key='$', mods='LEADER|SHIFT', action=act.PromptInputLine {
       description = 'Rename workspace:',
       action = wezterm.action_callback(function(_, _, line)
         if line then mux.rename_workspace(mux.get_active_workspace(), line) end
@@ -370,7 +370,7 @@ config.keys = {
 
   -- ── MISC ─────────────────────────────────────────────────────
   { key='r', mods='LEADER',     action=act.ReloadConfiguration },
-  { key='?', mods='LEADER',     action=act.ShowLauncherArgs { flags='FUZZY|KEY_ASSIGNMENTS' } },
+  { key='?', mods='LEADER|SHIFT', action=act.ShowLauncherArgs { flags='FUZZY|KEY_ASSIGNMENTS' } },
   { key='N', mods='CTRL|SHIFT', action=act.SpawnWindow },
   { key='T', mods='CTRL|SHIFT', action=act.ShowTabNavigator },
   -- Clear scrollback (tmux-style Ctrl+B + K)
