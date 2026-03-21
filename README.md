@@ -180,6 +180,8 @@ Connect manually from a new terminal window:
 wezterm connect mux
 ```
 
+> **Note:** If you see `pane id 0 not found in mux` errors in the status bar after reconnecting, this is fixed in the current config — `get_foreground_process_name()` is now wrapped in `pcall()` so stale pane references after mux reconnect no longer crash the status bar.
+
 To disable auto-attach and use WezTerm without the persistent mux, comment out this line in `wezterm.lua`:
 
 ```lua

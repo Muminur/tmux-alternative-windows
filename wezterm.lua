@@ -453,8 +453,10 @@ wezterm.on('update-status', function(window, pane)
     { Text = '  ' .. ws .. ' ' },
   }
 
-  -- Active process
-  local proc = pane:get_foreground_process_name() or ''
+  -- Active process (pcall guards against stale pane ID after mux reconnect)
+  local ok_proc, proc = pcall(function() return pane:get_foreground_process_name() end)
+  if not ok_proc then proc = '' end
+  proc = proc or ''
   if proc ~= '' then
     proc = proc:match('([^/\\]+)$') or proc
     parts[#parts+1] = wezterm.format {
