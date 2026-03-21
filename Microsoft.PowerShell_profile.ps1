@@ -1,20 +1,10 @@
 # ============================================================
 #  Neon PowerShell Profile — for WezTerm
+#  With auto-detection for starship (prompt) and zoxide (navigation)
 #  Repo: https://github.com/Muminur/tmux-alternative-windows
 # ============================================================
 
-function prompt {
-  $loc   = $ExecutionContext.SessionState.Path.CurrentLocation
-  $cyan  = "`e[96m"; $green = "`e[92m"; $reset = "`e[0m"; $bold = "`e[1m"
-  $yellow = "`e[93m"
-  $branch = ''
-  try {
-    $b = git rev-parse --abbrev-ref HEAD 2>$null
-    if ($b -and $b -ne 'HEAD') { $branch = " ${yellow}($b)${reset}" }
-  } catch {}
-  "${bold}${cyan}PS${reset} ${green}${loc}${reset}${branch}${cyan}>${reset} "
-}
-
+# PSStyle configuration for PS7+
 if ($PSVersionTable.PSVersion.Major -ge 7) {
   $PSStyle.Formatting.TableHeader   = "`e[96m"
   $PSStyle.Formatting.ErrorAccent   = "`e[91m"
@@ -27,6 +17,7 @@ if ($PSVersionTable.PSVersion.Major -ge 7) {
   $PSStyle.FileInfo.Executable      = "`e[92m"
 }
 
+# PSReadLine configuration
 if (Get-Module -ListAvailable PSReadLine) {
   Set-PSReadLineOption -Colors @{
     Command          = "`e[96m"
@@ -53,6 +44,24 @@ if (Get-Module -ListAvailable PSReadLine) {
   Set-PSReadLineKeyHandler -Key Tab -Function MenuComplete
 }
 
+# Prompt configuration: starship if available, otherwise custom neon
+if (Get-Command starship -ErrorAction SilentlyContinue) {
+  Invoke-Expression (&starship init powershell)
+} else {
+  function prompt {
+    $loc   = $ExecutionContext.SessionState.Path.CurrentLocation
+    $cyan  = "`e[96m"; $green = "`e[92m"; $reset = "`e[0m"; $bold = "`e[1m"
+    $yellow = "`e[93m"
+    $branch = ''
+    try {
+      $b = git rev-parse --abbrev-ref HEAD 2>$null
+      if ($b -and $b -ne 'HEAD') { $branch = " ${yellow}($b)${reset}" }
+    } catch {}
+    "${bold}${cyan}PS${reset} ${green}${loc}${reset}${branch}${cyan}>${reset} "
+  }
+}
+
+# Aliases
 Set-Alias ll Get-ChildItem
 Set-Alias g  git
 
@@ -66,3 +75,8 @@ Set-Alias ..  _cd_up1
 Set-Alias ... _cd_up2
 Set-Alias la  _la
 Set-Alias gs  _gs
+
+# Zoxide initialization (if available)
+if (Get-Command zoxide -ErrorAction SilentlyContinue) {
+  Invoke-Expression (& { (zoxide init powershell | Out-String) })
+}

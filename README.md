@@ -36,8 +36,33 @@ This installs and configures **everything automatically**:
 | 3 | **FiraCode Nerd Font** | Programming font with ligatures + Nerd Font glyphs |
 | 4 | **wezterm.lua** | Neon dark theme, tmux keybindings, session save/restore |
 | 5 | **PS7 profile** | Neon prompt and syntax highlighting |
+| 6 | **zoxide** | Smart `cd` replacement with frecency-based directory jumping |
+| 7 | **Starship** | Cross-shell prompt with git/language indicators |
 
 > **Requirement:** Windows 10/11 with `winget` (App Installer from the Microsoft Store)
+
+### Install flags
+
+```powershell
+# Only refresh config files — skip WezTerm/PS7/Font reinstall
+irm .../install.ps1 | iex  # then add -Update
+
+# Skip individual components
+install.ps1 -SkipZoxide -SkipStarship -SkipFont
+
+# Preview all steps without executing
+install.ps1 -DryRun
+```
+
+| Flag | Effect |
+|------|--------|
+| `-Update` | Re-download `wezterm.lua` and PS profile only |
+| `-SkipWezTerm` | Skip WezTerm install |
+| `-SkipPS7` | Skip PowerShell 7 install |
+| `-SkipFont` | Skip FiraCode Nerd Font install |
+| `-SkipZoxide` | Skip zoxide install |
+| `-SkipStarship` | Skip Starship install |
+| `-DryRun` | Print all steps without executing |
 
 ---
 
@@ -53,7 +78,7 @@ This installs and configures **everything automatically**:
 
 ![WezTerm status bar showing main workspace powershell.exe process name and clock](screenshots/wezterm-status-bar.png)
 
-*Right-side status bar: workspace indicator (cyan), active process name (purple), battery level, and live clock. Active tab highlighted in neon cyan.*
+*Right-side status bar: zoom indicator, workspace (cyan), pane count, process name (purple), git branch (yellow), battery, and live clock.*
 
 ---
 
@@ -65,7 +90,7 @@ tmux requires WSL or Cygwin on Windows — it is a Linux tool bolted onto Window
 |---------|:---:|:---:|
 | Pane splitting | Yes | Yes |
 | Persistent sessions | Yes | Yes |
-| Session save & restore | tmux-resurrect plugin | **Built-in** |
+| Named session save/restore | tmux-resurrect plugin | **Built-in** |
 | Auto-save every 15 min | tmux-continuum plugin | **Built-in** |
 | Vim-style copy mode | Yes | Yes |
 | Named workspaces / sessions | Yes | Yes |
@@ -76,26 +101,44 @@ tmux requires WSL or Cygwin on Windows — it is a Linux tool bolted onto Window
 | Lua scripting and automation | No | **Yes** |
 | Window transparency and blur | No | **Yes** |
 | One-command install | No | **Yes** |
+| Broadcast input to all panes | No | **Yes** |
+| Zoom indicator in status bar | No | **Yes** |
+| Git branch in status bar | No | **Yes** |
 
 ---
 
 ## Session Save & Restore (tmux-resurrect / tmux-continuum)
 
-This config implements the same session persistence policy as the popular tmux plugins:
+This config implements the same session persistence policy as the popular tmux plugins — and extends it with **named sessions**:
 
 | tmux plugin | WezTerm equivalent |
 |------------|-------------------|
 | `tmux-resurrect` — manual save/restore | `LEADER + Ctrl+S` / `LEADER + Ctrl+R` |
+| `tmux-resurrect` — named sessions | `LEADER + Ctrl+N` / `LEADER + Ctrl+L` |
 | `tmux-continuum` — auto-save every 15 min | Built-in auto-save timer |
 | `tmux-continuum` — auto-restore on start | Auto-restores on mux server startup |
 
 **What is saved:**
 - All workspace names (equivalent to tmux sessions)
+- Active workspace (restored on next launch)
 - All tab titles (equivalent to tmux windows)
 - All pane working directories
 - Pane layout (split directions reconstructed from saved positions)
 
-**Save file:** `%USERPROFILE%\.wezterm_sessions\last.json`
+**Save files:** `%USERPROFILE%\.wezterm_sessions\`
+- `last.json` — most recent auto/manual save
+- `prev.json` — backup of previous save (one rollback slot)
+- `<name>.json` — named sessions (unlimited slots)
+
+### Named Sessions
+
+Named sessions let you maintain multiple independent workspace layouts — like separate tmux session collections for different projects.
+
+```
+LEADER + Ctrl+N  →  prompt for a name, saves to ~/.wezterm_sessions/<name>.json
+LEADER + Ctrl+L  →  fuzzy-pick from saved names and restore
+LEADER + Ctrl+D  →  fuzzy-pick from saved names and delete
+```
 
 ### How it works
 
@@ -103,6 +146,7 @@ This config implements the same session persistence policy as the popular tmux p
 On startup:
   1. Check if mux server already has workspaces → if yes, reattach (no restart)
   2. Check if ~/.wezterm_sessions/last.json exists → if yes, restore it
+     (restores to the active workspace that was open when last saved)
   3. Otherwise → create default 'main' workspace with 2-pane layout
 
 Every 15 minutes:
@@ -115,9 +159,19 @@ LEADER + Ctrl+R:
   Restore from last.json into current session (adds workspaces)
 ```
 
-### Status bar indicator
+### Status bar indicators
 
-After a save (manual or auto), the status bar shows a green **SAVED** badge for 30 seconds so you can confirm the save completed.
+| Badge | Colour | Meaning |
+|-------|--------|---------|
+| `WAIT` | Magenta | Leader key is active |
+| `ZOOM` | Yellow | A pane is zoomed fullscreen |
+| `SAVED` | Green | Session was saved (shows for 30 s) |
+| Workspace name | Cyan | Current workspace |
+| `Np` | Yellow | Number of panes in active tab |
+| Process name | Purple | Foreground process |
+| Branch name | Yellow | Git branch of active pane's CWD |
+| Battery | Green/Red | Battery level |
+| Clock | Dim | Day, date, time |
 
 ---
 
@@ -138,7 +192,22 @@ The leader key is **CTRL+B** — same as the tmux default.
 | `LEADER + x` | Close current pane |
 | `LEADER + o` | Visual pane picker |
 | `LEADER + { / }` | Rotate panes |
-| `LEADER + A` | **Spawn 7-pane agent layout** |
+
+### Layouts
+
+| Keybinding | Layout | Use case |
+|-----------|--------|----------|
+| `LEADER + A` | 7-pane agent grid | Multi-agent (Claude Code etc.) |
+| `LEADER + Shift+2` | 2-pane side-by-side | Code + Terminal |
+| `LEADER + Shift+3` | 3-pane code layout | Editor + Tests + Logs |
+
+### Broadcast
+
+| Keybinding | Action |
+|-----------|--------|
+| `LEADER + Ctrl+X` | Prompt for text and send it to **all panes** in the active tab |
+
+Useful with the 7-pane agent layout: run the same setup command across all agents simultaneously.
 
 ### Tabs (equivalent to tmux windows)
 
@@ -168,6 +237,9 @@ The leader key is **CTRL+B** — same as the tmux default.
 | `LEADER + Ctrl+S` | **Save session** — writes all workspaces/tabs/panes to disk |
 | `LEADER + Ctrl+R` | **Restore session** — recreates workspaces from last save |
 | `LEADER + Ctrl+B` | **Restore backup** — restores from the previous save (`prev.json`) |
+| `LEADER + Ctrl+N` | **Save named session** — prompt for a name, save to `<name>.json` |
+| `LEADER + Ctrl+L` | **List named sessions** — fuzzy-pick and restore a named session |
+| `LEADER + Ctrl+D` | **Delete named session** — fuzzy-pick and delete a named session |
 
 ### Copy Mode — Vim Keybindings
 
@@ -198,6 +270,7 @@ Enter with `LEADER + [`, exit with `q` or `Esc`.
 | `CTRL+=` / `CTRL+-` | Increase / decrease font size |
 | `CTRL+0` | Reset font size |
 | `LEADER + r` | Reload config without restart |
+| `LEADER + e` | Open current selection (or viewport) in `$EDITOR` |
 | `LEADER + f` | Search scrollback buffer |
 | `LEADER + Space` | Quick select any text pattern |
 | `LEADER + u` | Quick select URL and open in browser |
@@ -205,7 +278,9 @@ Enter with `LEADER + [`, exit with `q` or `Esc`.
 
 ---
 
-## 7-Pane Agent Layout
+## Layouts
+
+### 7-Pane Agent Grid
 
 Press **LEADER + A** to expand the current tab into a 7-pane workspace — ideal for running multiple Claude Code agents in parallel:
 
@@ -217,7 +292,31 @@ Press **LEADER + A** to expand the current tab into a 7-pane workspace — ideal
 +----------+----------+---------------------+
 ```
 
-Each pane opens a PowerShell 7 session labelled Agent-1 through Agent-7. Other tabs and workspaces are untouched.
+Each pane opens a PowerShell 7 session labelled Agent-1 through Agent-7.
+
+### 2-Pane Side-by-Side
+
+Press **LEADER + Shift+2** — splits the current pane 50/50 horizontally:
+
+```
++---------------------+---------------------+
+|       Editor        |      Terminal       |
++---------------------+---------------------+
+```
+
+### 3-Pane Code Layout
+
+Press **LEADER + Shift+3** — editor on the left, tests and logs stacked on the right:
+
+```
++---------------------+----------+
+|                     |  Tests   |
+|       Editor        +----------+
+|                     |   Logs   |
++---------------------+----------+
+```
+
+> **Note:** Layout shortcuts add panes to the current tab. Close unwanted panes with `LEADER + x`.
 
 ---
 
@@ -242,7 +341,7 @@ wezterm connect mux
 | Say **Yes** to "kill all panes?" | Processes are killed, session is gone | No |
 | `CTRL+D` in a shell | Exits that shell, closes that pane only | That pane lost |
 
-**Rule of thumb:** To preserve your session without a save file, always close the WezTerm **window** — never say "yes" to killing panes. The mux server (`wezterm-mux-server.exe`) keeps running in the background.
+**Rule of thumb:** To preserve your session without a save file, always close the WezTerm **window** — never say "yes" to killing panes.
 
 With session save/restore (`LEADER + Ctrl+S`), you can safely kill the mux server and fully restore your workspace layout on next startup.
 
@@ -250,11 +349,11 @@ With session save/restore (`LEADER + Ctrl+S`), you can safely kill the mux serve
 
 **Q: What does LEADER+Ctrl+S save?**
 
-It saves all workspace names, tab titles, and pane working directories to `%USERPROFILE%\.wezterm_sessions\last.json`. On the next startup (or when you press LEADER+Ctrl+R), WezTerm recreates those workspaces and opens panes in the correct directories.
+It saves all workspace names, the active workspace, tab titles, and pane working directories to `%USERPROFILE%\.wezterm_sessions\last.json`. On the next startup (or when you press LEADER+Ctrl+R), WezTerm recreates those workspaces and opens panes in the correct directories.
 
 **Q: Does it save running processes?**
 
-No — terminal output and running processes are not saved. This matches the behaviour of tmux-resurrect (which also cannot restore arbitrary process state). Your shell restarts fresh in the correct working directory.
+No — terminal output and running processes are not saved. This matches the behaviour of tmux-resurrect. Your shell restarts fresh in the correct working directory.
 
 **Q: How often does auto-save run?**
 
@@ -262,24 +361,19 @@ Every 15 minutes, matching tmux-continuum's default interval. The green **SAVED*
 
 **Q: What is `prev.json` and how do I restore from it?**
 
-Every time a save runs (manual or auto), the previous `last.json` is renamed to `prev.json` before being replaced. This gives you one-step rollback to the prior snapshot — press `LEADER + Ctrl+B` to restore from it. It mirrors tmux-resurrect's own backup slot behavior.
+Every time a save runs (manual or auto), the previous `last.json` is renamed to `prev.json` before being replaced. Press `LEADER + Ctrl+B` to restore from it. Named sessions are not affected by this rotation.
+
+**Q: How do named sessions differ from the main save slot?**
+
+Named sessions (`LEADER + Ctrl+N`) write to a separate `<name>.json` file and never overwrite `last.json` or `prev.json`. They persist indefinitely until you delete them with `LEADER + Ctrl+D`. Use them for project-specific layouts you want to keep permanently.
 
 **Q: I closed WezTerm and my terminal output is gone. Can I get it back?**
 
-No — terminal output lives in RAM. Once the mux server exits, the scrollback is permanently gone. This is a fundamental property of all terminal multiplexers (tmux, screen, WezTerm). Use `LEADER+Ctrl+S` before closing to save your workspace layout.
-
-**Q: My typed commands are gone too — can I get those back?**
-
-Yes — PowerShell command history is preserved automatically by PSReadLine, regardless of WezTerm restarts. Press the **Up arrow** after reopening to access your previous commands.
-
-History is saved to:
-```
-%APPDATA%\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt
-```
+No — terminal output lives in RAM. Once the mux server exits, the scrollback is permanently gone. This is a fundamental property of all terminal multiplexers. Use `LEADER+Ctrl+S` before closing to save your workspace layout.
 
 **Q: How much scrollback history is kept during a live session?**
 
-20,000 lines (configurable via `config.scrollback_lines` in `wezterm.lua`). Use `LEADER+f` to search the scrollback, or `CTRL+SHIFT+K` to clear it.
+20,000 lines (configurable via `config.scrollback_lines` in `wezterm.lua`). Use `LEADER+f` to search, `LEADER+e` to open a selection in your editor, or `CTRL+SHIFT+K` to clear the buffer.
 
 ---
 
@@ -307,11 +401,30 @@ WezTerm also auto-reads `~/.ssh/config` — no extra setup for hosts already def
 | Cyan accent | `#00ffe1` (splits, active tab, workspace badge) |
 | Magenta | `#ff00aa` (leader key indicator) |
 | Green | `#00ff88` (session saved badge) |
-| Yellow | `#ffe566` |
+| Yellow | `#ffe566` (pane count, git branch, zoom badge) |
 | Cursor | Blinking cyan bar |
 | Backdrop | Windows Acrylic blur |
 | Font | FiraCode Nerd Font Medium 14px |
 | Ligatures | calt, clig, liga, ss01, ss03, ss05 |
+
+---
+
+## PowerShell Profile
+
+The included profile (`Microsoft.PowerShell_profile.ps1`) auto-detects installed tools:
+
+| Tool | Auto-detected? | Behaviour |
+|------|---------------|-----------|
+| **Starship** | Yes | Uses Starship for the prompt (git, language, docker indicators) |
+| **zoxide** | Yes | Enables `z <dir>` for smart frecency-based navigation |
+| Neither | — | Falls back to built-in neon prompt with git branch |
+
+Install both via the installer, or separately:
+
+```powershell
+winget install Starship.Starship
+winget install ajeetdsouza.zoxide
+```
 
 ---
 
@@ -371,7 +484,7 @@ Copy-Item "$env:USERPROFILE\.config\wezterm\wezterm.lua" "$env:USERPROFILE\.wezt
 
 ## Customising
 
-The config lives at `~/.config/wezterm/wezterm.lua`. WezTerm hot-reloads on save — press `LEADER + r` to force reload.
+The config lives at `~/.config/wezterm/wezterm.lua`. WezTerm hot-reloads on save — press `LEADER + r` to force reload. A toast notification confirms the reload.
 
 ```lua
 config.font_size = 14.0                   -- font size
@@ -379,7 +492,6 @@ config.window_background_opacity = 0.97  -- 0.0 transparent, 1.0 solid
 config.leader = { key = 'a', mods = 'CTRL' }  -- change leader key
 
 -- Window decorations: 'TITLE | RESIZE' shows OS title bar with minimize/maximize/close buttons
--- Change to 'RESIZE' to hide the title bar (buttons disappear), or 'NONE' for borderless
 config.window_decorations = 'TITLE | RESIZE'
 
 -- Change auto-save interval (seconds)
@@ -422,6 +534,8 @@ If nothing appears, reinstall the font. The config falls back to JetBrainsMono, 
 
 WezTerm reads `~/.config/wezterm/wezterm.lua` first, then `~/.wezterm.lua`. The installer writes both. If neither loads, fully quit WezTerm from the system tray and reopen.
 
+A toast notification saying "Config reloaded" confirms a successful hot-reload via `LEADER + r`.
+
 ---
 
 **Window title bar buttons (minimize / maximize / close) not showing**
@@ -442,21 +556,29 @@ Old config has `name = 'local'` in `unix_domains`. The current config uses `name
 
 **Session restore creates duplicate workspaces**
 
-Press `LEADER + Ctrl+R` only when starting fresh. If you already have workspaces open, the restore will add more (the existing ones are unaffected). Close unwanted workspaces with `LEADER + &`.
+Press `LEADER + Ctrl+R` only when starting fresh. If you already have workspaces open, the restore will add more. Close unwanted workspaces with `LEADER + &`.
+
+---
+
+**LEADER+A does nothing / agent layout does not open**
+
+Make sure you are running the latest `wezterm.lua` from this repo. Earlier versions had a Lua forward-reference bug that silently prevented the agent layout from spawning. Re-download with:
+
+```powershell
+install.ps1 -Update
+```
 
 ---
 
 **`wezterm-mux-server.exe` is running in Task Manager — is that normal?**
 
-Yes. `wezterm-mux-server.exe` is the background process that keeps your sessions alive between GUI window opens. It is safe and expected — do not kill it unless you want to end all running sessions. Killing it is equivalent to `tmux kill-server`.
-
-If you want to stop it intentionally:
+Yes. `wezterm-mux-server.exe` is the background process that keeps your sessions alive between GUI window opens. It is safe and expected. Killing it is equivalent to `tmux kill-server`.
 
 ```powershell
 Stop-Process -Name wezterm-mux-server -ErrorAction SilentlyContinue
 ```
 
-The next time you open WezTerm, a new mux server starts automatically. Use `LEADER + Ctrl+S` before killing it to save your session first.
+Use `LEADER + Ctrl+S` before killing it to save your session first.
 
 ---
 
@@ -470,13 +592,19 @@ wsl --install
 
 ---
 
+**Git branch not showing in status bar**
+
+The status bar queries `git` in the background for the active pane's directory. If git is not in PATH or the directory is not a git repo, the branch segment is hidden. Results are cached for 10 seconds per directory to avoid performance impact.
+
+---
+
 ## Repository Structure
 
 ```
 tmux-alternative-windows/
 ├── install.ps1                       # One-line installer script
-├── wezterm.lua                       # Full WezTerm Lua config (session save/restore included)
-├── Microsoft.PowerShell_profile.ps1  # Neon PS7 profile
+├── wezterm.lua                       # Full WezTerm Lua config (all features)
+├── Microsoft.PowerShell_profile.ps1  # Neon PS7 profile (Starship/zoxide auto-detect)
 ├── screenshots/
 │   ├── wezterm-2pane-neon.png        # 2-pane neon dark layout
 │   └── wezterm-status-bar.png        # Status bar detail
@@ -493,6 +621,7 @@ Open an issue or pull request. Suggestions welcome for:
 - More SSH domain examples
 - WSL integration improvements
 - Extra keybinding configurations
+- Additional layout presets
 
 ---
 
@@ -504,6 +633,8 @@ Open an issue or pull request. Suggestions welcome for:
 - [tmux-continuum](https://github.com/tmux-plugins/tmux-continuum) — the tmux plugin this auto-save mirrors
 - [FiraCode Nerd Font releases](https://github.com/ryanoasis/nerd-fonts/releases)
 - [PowerShell 7 on GitHub](https://github.com/PowerShell/PowerShell)
+- [Starship prompt](https://starship.rs/)
+- [zoxide](https://github.com/ajeetdsouza/zoxide)
 
 ---
 

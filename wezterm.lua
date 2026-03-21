@@ -6,10 +6,18 @@
 --  Agents    : 7-pane Claude Code workspace on startup
 --  Work tab  : 2-pane side-by-side
 --  Leader    : CTRL+B  (tmux default)
---  Mux       : built-in unix domain (wezterm connect local)
+--  Mux       : built-in unix domain (wezterm connect mux)
 --  Sessions  : tmux-resurrect/continuum style save & restore
 --              LEADER+Ctrl+S = save   LEADER+Ctrl+R = restore
+--              LEADER+Ctrl+N = save named session
+--              LEADER+Ctrl+L = list & restore named session
+--              LEADER+Ctrl+D = delete named session
 --              Auto-saves every 15 min, auto-restores on start
+--  Layouts   : LEADER+A        = 7-pane agent grid
+--              LEADER+Shift+2  = 2-pane side-by-side
+--              LEADER+Shift+3  = 3-pane code layout
+--  Broadcast : LEADER+Ctrl+X  = send text to all panes
+--  Status    : zoom indicator, git branch, workspace, battery
 -- ============================================================
 
 local wezterm = require 'wezterm'
@@ -17,6 +25,10 @@ local act     = wezterm.action
 local mux     = wezterm.mux
 
 local config  = wezterm.config_builder()
+
+-- Per-window state (keyed by window_id)
+local sync_windows  = {}  -- reserved for future sync-mode extensions
+local git_branch_cache = {} -- cwd -> { branch, expires }
 
 -- ============================================================
 -- NEON DARK COLOR SCHEME
@@ -26,7 +38,7 @@ local neon = {
   bg_alt      = '#11111f',
   bg_panel    = '#14142a',
   bg_sel      = '#1e1e3f',
-  fg          = '#ffffff',   -- pure white, maximum visibility
+  fg          = '#ffffff',
   fg_dim      = '#aabbdd',
   cyan        = '#00ffe1',
   magenta     = '#ff00aa',
@@ -182,7 +194,7 @@ end
 
 -- ============================================================
 -- BUILT-IN MULTIPLEXER  (like tmux — persists sessions)
---   Attach:  wezterm connect local
+--   Attach:  wezterm connect mux
 -- ============================================================
 config.unix_domains = {
   { name = 'mux' },
@@ -261,20 +273,22 @@ config.leader = { key = 'b', mods = 'CTRL', timeout_milliseconds = 2000 }
 --
 --   Policy mirrors tmux-resurrect / tmux-continuum:
 --     - Manual save:    LEADER + Ctrl+S
+--     - Named save:     LEADER + Ctrl+N  (saves to <name>.json)
+--     - Named restore:  LEADER + Ctrl+L  (fuzzy-pick from saved names)
+--     - Named delete:   LEADER + Ctrl+D  (fuzzy-pick and delete)
 --     - Manual restore: LEADER + Ctrl+R
 --     - Auto-save:      every 15 minutes (AUTOSAVE_SECS)
 --     - Auto-restore:   on mux startup if a save file exists
 --
 --   Save file: %USERPROFILE%\.wezterm_sessions\last.json
---   Saves: workspace names, tab titles, pane CWDs, pane layout
+--   Saves: workspace names, active workspace, tab titles, pane CWDs, pane layout
 -- ============================================================
 
 local SESSION_DIR   = wezterm.home_dir .. '/.wezterm_sessions'
 local SESSION_FILE  = SESSION_DIR .. '/last.json'
 local AUTOSAVE_SECS = 15 * 60   -- 15 minutes, matching tmux-continuum default
 
--- last save timestamp for status-bar indicator
-local last_save_time = nil
+local last_save_time = nil  -- for status-bar SAVED indicator
 
 -- ── Minimal JSON encoder ────────────────────────────────────
 local function json_encode(v)
@@ -401,18 +415,44 @@ end
 local function normalize_cwd(cwd_obj)
   if not cwd_obj then return '' end
   local path = cwd_obj.file_path or tostring(cwd_obj)
-  -- Remove leading slash from Windows file URIs: /C:/Users/... → C:/Users/...
   path = path:gsub('^/([A-Za-z]:)', '%1')
-  -- Strip trailing slash
   path = path:gsub('[/\\]+$', '')
   return path
 end
 
--- ── Save current session ─────────────────────────────────────
-local function do_save_session()
-  ensure_session_dir()
+-- ── List named session files ──────────────────────────────────
+-- Returns table of base names (without .json) from the session dir,
+-- excluding the reserved slots: last, prev, and any .tmp files.
+local function list_session_files()
+  local sessions = {}
+  local dir = SESSION_DIR:gsub('/', '\\')
+  local f = io.popen('cmd /c dir /b "' .. dir .. '\\*.json" 2>nul')
+  if not f then return sessions end
+  for line in f:lines() do
+    line = line:gsub('%s+$', '')
+    local name = line:match('^(.+)%.json$')
+    if name and name ~= 'last' and name ~= 'prev' then
+      sessions[#sessions+1] = name
+    end
+  end
+  f:close()
+  return sessions
+end
 
-  local session = { version = 2, saved_at = os.time(), workspaces = {} }
+-- ── Save current session ──────────────────────────────────────
+-- dest_file: optional path; defaults to SESSION_FILE (last.json).
+-- Only the main slot (last.json) rotates prev.json and updates last_save_time.
+local function do_save_session(dest_file)
+  ensure_session_dir()
+  local is_main = (dest_file == nil)
+  dest_file = dest_file or SESSION_FILE
+
+  local session = {
+    version          = 2,
+    saved_at         = os.time(),
+    active_workspace = mux.get_active_workspace(),  -- Enhancement 7
+    workspaces       = {},
+  }
 
   local ok_names, names = pcall(mux.get_workspace_names)
   if not (ok_names and names) then return false end
@@ -460,7 +500,7 @@ local function do_save_session()
       end
 
       table.insert(ws_data.windows, win_data)
-      break  -- one mux window per workspace is the typical setup
+      break  -- one mux window per workspace
 
       ::next_win::
     end
@@ -468,33 +508,32 @@ local function do_save_session()
     table.insert(session.workspaces, ws_data)
   end
 
-  -- Atomic write: write to .tmp first, then rotate last.json → prev.json, then rename .tmp → last.json
-  local tmp_file  = SESSION_FILE .. '.tmp'
-  local prev_file = SESSION_DIR  .. '/prev.json'
+  -- Atomic write: .tmp → rotate prev → rename to dest
+  local tmp_file = dest_file .. '.tmp'
   local ok_write = pcall(function()
     local f = assert(io.open(tmp_file, 'w'))
     f:write(json_encode(session))
     f:close()
-    -- Backup existing save before replacing
-    local existing = io.open(SESSION_FILE, 'r')
-    if existing then
-      existing:close()
-      os.rename(SESSION_FILE, prev_file)
+    -- Only rotate prev.json for the main save slot
+    if is_main then
+      local prev_file = SESSION_DIR .. '/prev.json'
+      local existing = io.open(dest_file, 'r')
+      if existing then
+        existing:close()
+        os.rename(dest_file, prev_file)
+      end
     end
-    os.rename(tmp_file, SESSION_FILE)
+    os.rename(tmp_file, dest_file)
   end)
 
-  if ok_write then last_save_time = os.time() end
+  if ok_write and is_main then last_save_time = os.time() end
   return ok_write
 end
 
 -- ── Restore panes inside one tab ─────────────────────────────
--- Mirrors tmux-resurrect pane-layout restoration: recreate each
--- saved pane in order, inferring split direction from position.
 local function restore_panes(first_pane, panes_data, shell)
   if not panes_data or #panes_data == 0 then return end
 
-  -- CD first pane to its saved directory
   local p1 = panes_data[1]
   if p1 and p1.cwd and #p1.cwd > 0 then
     first_pane:send_text('cd "' .. p1.cwd .. '"\r')
@@ -506,7 +545,6 @@ local function restore_panes(first_pane, panes_data, shell)
     local cwd  = p.cwd or ''
     local prev = panes_data[i - 1]
 
-    -- Infer direction: if new pane is below previous → Bottom, else Right
     local direction = 'Right'
     if prev and p.top ~= nil and prev.top ~= nil and p.top > prev.top then
       direction = 'Bottom'
@@ -524,7 +562,6 @@ local function restore_panes(first_pane, panes_data, shell)
 end
 
 -- ── Restore full session from save file ──────────────────────
--- Returns true if any workspace was restored.
 local function do_restore_session(shell, file_path)
   local f = io.open(file_path or SESSION_FILE, 'r')
   if not f then return false end
@@ -536,14 +573,13 @@ local function do_restore_session(shell, file_path)
     return false
   end
 
-  local first_ws = true
+  local any_restored = false
 
   for _, ws in ipairs(session.workspaces) do
     if not (ws.windows and #ws.windows > 0) then goto next_ws end
     local win_data = ws.windows[1]
     if not (win_data.tabs and #win_data.tabs > 0) then goto next_ws end
 
-    -- First pane CWD for initial spawn
     local first_tab  = win_data.tabs[1]
     local first_cwd  = ''
     if first_tab.panes and first_tab.panes[1] then
@@ -558,11 +594,9 @@ local function do_restore_session(shell, file_path)
     end)
     if not ok_spawn then goto next_ws end
 
-    -- Restore first tab
     tab:set_title(first_tab.title or ws.name)
     restore_panes(first_pane, first_tab.panes, shell)
 
-    -- Restore additional tabs
     for j = 2, #win_data.tabs do
       local tab_data = win_data.tabs[j]
       local tab_cwd  = ''
@@ -582,15 +616,23 @@ local function do_restore_session(shell, file_path)
       end
     end
 
-    if first_ws then
-      pcall(mux.set_active_workspace, ws.name)
-      first_ws = false
-    end
+    any_restored = true
 
     ::next_ws::
   end
 
-  return not first_ws  -- true if at least one workspace was restored
+  -- Enhancement 7: restore to the saved active workspace
+  if any_restored then
+    local target_ws = session.active_workspace
+    if not target_ws and session.workspaces and session.workspaces[1] then
+      target_ws = session.workspaces[1].name
+    end
+    if target_ws then
+      pcall(mux.set_active_workspace, target_ws)
+    end
+  end
+
+  return any_restored
 end
 
 -- ── Auto-save loop  (tmux-continuum style) ───────────────────
@@ -598,13 +640,75 @@ local function start_autosave()
   pcall(function()
     wezterm.time.call_after(AUTOSAVE_SECS, function()
       do_save_session()
-      start_autosave()  -- reschedule for next interval
+      start_autosave()
     end)
   end)
 end
 
 -- ============================================================
--- KEY BINDINGS  (all tmux-equivalent)
+-- GIT BRANCH HELPER  (Enhancement 5)
+-- Cached for 10 seconds per directory to avoid spawning git
+-- on every status-bar repaint (~1 s interval).
+-- ============================================================
+local function get_git_branch(cwd)
+  if not cwd or #cwd == 0 then return nil end
+  local now    = os.time()
+  local cached = git_branch_cache[cwd]
+  if cached and cached.expires > now then return cached.branch end
+
+  local ok, success, stdout = pcall(wezterm.run_child_process, {
+    'git', '-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD',
+  })
+  local branch = nil
+  if ok and success and stdout then
+    local b = stdout:gsub('%s+$', '')
+    if #b > 0 and b ~= 'HEAD' then branch = b end
+  end
+
+  git_branch_cache[cwd] = { branch = branch, expires = now + 10 }
+  return branch
+end
+
+-- ============================================================
+-- LAYOUT FUNCTIONS  (Enhancement 6 + bug-fix: defined BEFORE config.keys)
+-- ============================================================
+
+-- 2-pane side-by-side (Code + Terminal)
+local function spawn_layout_2pane(root_pane)
+  root_pane:split { direction = 'Right', size = 0.5 }
+end
+
+-- 3-pane code layout (Editor left | Tests top-right | Logs bottom-right)
+local function spawn_layout_3pane(root_pane)
+  local right_top = root_pane:split { direction = 'Right', size = 0.40 }
+  right_top:split { direction = 'Bottom', size = 0.50 }
+end
+
+-- 7-pane agent grid (was defined at bottom — moved here to fix forward-reference bug)
+--
+--   +----------+----------+----------+----------+
+--   |  Agent 1 |  Agent 2 |  Agent 3 |  Agent 4 |  60%
+--   +----------+----------+----------+----------+
+--   |  Agent 5 |  Agent 6 |       Agent 7       |  40%
+--   +----------+----------+---------------------+
+local function spawn_agent_layout(root_pane)
+  local bot1 = root_pane:split { direction = 'Bottom', size = 0.4 }
+
+  local p2 = root_pane:split { direction = 'Right', size = 0.75 }
+  local p3 = p2:split        { direction = 'Right', size = 0.67 }
+  local p4 = p3:split        { direction = 'Right', size = 0.50 }
+
+  local bot2 = bot1:split { direction = 'Right', size = 0.67 }
+  local bot3 = bot2:split { direction = 'Right', size = 0.50 }
+
+  local panes = { root_pane, p2, p3, p4, bot1, bot2, bot3 }
+  for i, p in ipairs(panes) do
+    p:send_text('$Host.UI.RawUI.WindowTitle = "Agent-' .. i .. '"; Clear-Host\r')
+  end
+end
+
+-- ============================================================
+-- KEY BINDINGS  (all tmux-equivalent + new enhancements)
 -- ============================================================
 config.keys = {
 
@@ -679,7 +783,7 @@ config.keys = {
   }},
 
   -- ── SESSION SAVE / RESTORE  (tmux-resurrect style) ─────────
-  -- LEADER + Ctrl+S  →  save all workspaces to ~/.wezterm_sessions/last.json
+  -- LEADER + Ctrl+S  →  save all workspaces to last.json
   { key='s', mods='LEADER|CTRL', action=wezterm.action_callback(function(window, _)
       local ok = do_save_session()
       pcall(function()
@@ -718,8 +822,149 @@ config.keys = {
       end)
   end)},
 
-  -- ── DETACH  (tmux LEADER+d) — close GUI window, mux server keeps running ─
+  -- ── NAMED SESSION MANAGEMENT  (Enhancement 1) ───────────────
+  -- LEADER + Ctrl+N  →  save a named session
+  { key='n', mods='LEADER|CTRL', action=wezterm.action_callback(function(window, pane)
+      window:perform_action(act.PromptInputLine {
+        description = 'Save session as (name):',
+        action = wezterm.action_callback(function(w, _, line)
+          if line and #line > 0 then
+            local safe = line:gsub('[^%w%-%_]', '_')
+            local path = SESSION_DIR .. '/' .. safe .. '.json'
+            local ok   = do_save_session(path)
+            pcall(function()
+              w:toast_notification(
+                'WezTerm Sessions',
+                ok and ('Saved as "' .. safe .. '"') or 'Save failed',
+                nil, 3000
+              )
+            end)
+          end
+        end),
+      }, pane)
+  end)},
+
+  -- LEADER + Ctrl+L  →  fuzzy-pick a named session and restore it
+  { key='l', mods='LEADER|CTRL', action=wezterm.action_callback(function(window, pane)
+      local names = list_session_files()
+      if #names == 0 then
+        window:toast_notification('WezTerm Sessions', 'No named sessions found', nil, 3000)
+        return
+      end
+      local choices = {}
+      for _, name in ipairs(names) do
+        choices[#choices+1] = { id = name, label = name }
+      end
+      window:perform_action(act.InputSelector {
+        title   = 'Restore Named Session',
+        choices = choices,
+        fuzzy   = true,
+        action  = wezterm.action_callback(function(w, _, id, _)
+          if id then
+            local shell = pwsh and { pwsh, '-NoLogo' } or { 'powershell.exe', '-NoLogo' }
+            local path  = SESSION_DIR .. '/' .. id .. '.json'
+            local ok    = do_restore_session(shell, path)
+            pcall(function()
+              w:toast_notification(
+                'WezTerm Sessions',
+                ok and ('Restored "' .. id .. '"') or 'Restore failed',
+                nil, 3000
+              )
+            end)
+          end
+        end),
+      }, pane)
+  end)},
+
+  -- LEADER + Ctrl+D  →  fuzzy-pick a named session and delete it
+  { key='d', mods='LEADER|CTRL', action=wezterm.action_callback(function(window, pane)
+      local names = list_session_files()
+      if #names == 0 then
+        window:toast_notification('WezTerm Sessions', 'No named sessions found', nil, 3000)
+        return
+      end
+      local choices = {}
+      for _, name in ipairs(names) do
+        choices[#choices+1] = { id = name, label = name }
+      end
+      window:perform_action(act.InputSelector {
+        title   = 'Delete Named Session',
+        choices = choices,
+        fuzzy   = true,
+        action  = wezterm.action_callback(function(w, _, id, _)
+          if id then
+            local path = SESSION_DIR .. '/' .. id .. '.json'
+            local ok   = pcall(os.remove, path)
+            pcall(function()
+              w:toast_notification(
+                'WezTerm Sessions',
+                ok and ('Deleted "' .. id .. '"') or 'Delete failed',
+                nil, 3000
+              )
+            end)
+          end
+        end),
+      }, pane)
+  end)},
+
+  -- ── BROADCAST  (Enhancement 3) ──────────────────────────────
+  -- LEADER + Ctrl+X  →  prompt for text, send to ALL panes in active tab
+  { key='x', mods='LEADER|CTRL', action=wezterm.action_callback(function(window, pane)
+      window:perform_action(act.PromptInputLine {
+        description = 'Broadcast to ALL panes (Enter to send):',
+        action = wezterm.action_callback(function(w, _, line)
+          if line then
+            local tab   = w:active_tab()
+            local panes = tab:panes()
+            for _, p in ipairs(panes) do
+              p:send_text(line .. '\r')
+            end
+            pcall(function()
+              w:toast_notification(
+                'WezTerm',
+                'Broadcast sent to ' .. #panes .. ' pane(s)',
+                nil, 2000
+              )
+            end)
+          end
+        end),
+      }, pane)
+  end)},
+
+  -- ── DETACH  (tmux LEADER+d) ─────────────────────────────────
   { key='d', mods='LEADER', action=act.QuitApplication },
+
+  -- ── SCROLLBACK IN EDITOR  (Enhancement 9) ───────────────────
+  -- LEADER + e  →  open current selection (or try viewport) in $EDITOR
+  { key='e', mods='LEADER', action=wezterm.action_callback(function(window, pane)
+      local text = window:get_selection_text_for_pane(pane)
+      if not text or #text == 0 then
+        -- Fallback: try wezterm CLI to grab viewport text
+        local pane_id = tostring(pane:pane_id())
+        local ok, success, stdout = pcall(wezterm.run_child_process, {
+          'wezterm', 'cli', 'get-text', '--pane-id', pane_id,
+        })
+        if ok and success and stdout and #stdout > 0 then
+          text = stdout
+        else
+          pcall(function()
+            window:toast_notification(
+              'WezTerm',
+              'No selection — enter copy mode (LEADER+[), select text, then press LEADER+e',
+              nil, 4000
+            )
+          end)
+          return
+        end
+      end
+      local tmp = SESSION_DIR .. '/scrollback_' .. os.time() .. '.txt'
+      local f = io.open(tmp, 'w')
+      if f then
+        f:write(text)
+        f:close()
+        wezterm.open_with(tmp)
+      end
+  end)},
 
   -- ── COPY / SEARCH ───────────────────────────────────────────
   { key='[',     mods='LEADER', action=act.ActivateCopyMode },
@@ -746,6 +991,20 @@ config.keys = {
   -- ── SSH / DOMAINS ────────────────────────────────────────────
   { key='D', mods='LEADER', action=act.ShowLauncherArgs { flags='FUZZY|DOMAINS' } },
 
+  -- ── LAYOUTS  (Enhancement 6) ─────────────────────────────────
+  -- LEADER + A         →  7-pane agent grid
+  { key='A', mods='LEADER', action=wezterm.action_callback(function(_, pane)
+      spawn_agent_layout(pane)
+  end)},
+  -- LEADER + Shift+2   →  2-pane side-by-side
+  { key='2', mods='LEADER|SHIFT', action=wezterm.action_callback(function(_, pane)
+      spawn_layout_2pane(pane)
+  end)},
+  -- LEADER + Shift+3   →  3-pane code layout
+  { key='3', mods='LEADER|SHIFT', action=wezterm.action_callback(function(_, pane)
+      spawn_layout_3pane(pane)
+  end)},
+
   -- ── MISC ─────────────────────────────────────────────────────
   { key='r', mods='LEADER',     action=act.ReloadConfiguration },
   { key='?', mods='LEADER|SHIFT', action=act.ShowLauncherArgs { flags='FUZZY|KEY_ASSIGNMENTS' } },
@@ -755,11 +1014,6 @@ config.keys = {
       act.ClearScrollback 'ScrollbackAndViewport',
       act.SendKey { key='l', mods='CTRL' },
   }},
-
-  -- ── AGENT LAYOUT respawn ─────────────────────────────────────
-  { key='A', mods='LEADER', action=wezterm.action_callback(function(_, pane)
-      spawn_agent_layout(pane)
-  end)},
 }
 
 -- ============================================================
@@ -805,12 +1059,14 @@ config.key_tables = {
 }
 
 -- ============================================================
--- STATUS BAR  (leader | session-saved | workspace | process | battery | clock)
+-- STATUS BAR  (leader | zoom | saved | workspace | panes | process | git | battery | clock)
+-- Enhancement 2: zoom indicator
+-- Enhancement 5: git branch
 -- ============================================================
 wezterm.on('update-status', function(window, pane)
   local parts = {}
 
-  -- Leader active
+  -- Leader active indicator
   if window:leader_is_active() then
     parts[#parts+1] = wezterm.format {
       { Background = { Color = neon.magenta } },
@@ -818,6 +1074,22 @@ wezterm.on('update-status', function(window, pane)
       { Attribute  = { Intensity = 'Bold'   } },
       { Text = '  WAIT  ' },
     }
+  end
+
+  -- Enhancement 2: Zoom indicator (visible when a pane is zoomed)
+  local ok_pi, panes_info = pcall(function() return window:active_tab():panes_with_info() end)
+  if ok_pi and panes_info then
+    for _, pinfo in ipairs(panes_info) do
+      if pinfo.is_active and pinfo.is_zoomed then
+        parts[#parts+1] = wezterm.format {
+          { Background = { Color = neon.yellow } },
+          { Foreground = { Color = neon.black  } },
+          { Attribute  = { Intensity = 'Bold'  } },
+          { Text = '  ZOOM  ' },
+        }
+        break
+      end
+    end
   end
 
   -- Session saved indicator (visible for 30 s after save)
@@ -865,6 +1137,20 @@ wezterm.on('update-status', function(window, pane)
     }
   end
 
+  -- Enhancement 5: Git branch (cached 10 s per cwd)
+  local ok_cwd, cwd_obj = pcall(function() return pane:get_current_working_dir() end)
+  if ok_cwd and cwd_obj then
+    local cwd_path = normalize_cwd(cwd_obj)
+    local branch   = get_git_branch(cwd_path)
+    if branch then
+      parts[#parts+1] = wezterm.format {
+        { Background = { Color = neon.bg_panel } },
+        { Foreground = { Color = neon.yellow   } },
+        { Text = '   ' .. branch .. ' ' },
+      }
+    end
+  end
+
   -- Battery
   local ok, bats = pcall(wezterm.battery_info)
   if ok and bats and #bats > 0 then
@@ -872,8 +1158,8 @@ wezterm.on('update-status', function(window, pane)
       local pct  = math.floor(b.state_of_charge * 100)
       local col  = pct > 30 and neon.green or neon.red
       local icon = b.state == 'Charging'
-                 and wezterm.nerdfonts.md_battery_charging   -- named: charging bolt glyph
-                 or  wezterm.nerdfonts.md_battery_high       -- named: full battery glyph
+                 and wezterm.nerdfonts.md_battery_charging
+                 or  wezterm.nerdfonts.md_battery_high
       parts[#parts+1] = wezterm.format {
         { Background = { Color = neon.bg_alt } },
         { Foreground = { Color = col         } },
@@ -919,49 +1205,25 @@ wezterm.on('format-tab-title', function(tab, _, _, _, _, max_width)
 end)
 
 -- ============================================================
--- 7-PANE AGENT LAYOUT
---
---   +----------+----------+----------+----------+
---   |  Agent 1 |  Agent 2 |  Agent 3 |  Agent 4 |  60%
---   +----------+----------+----------+----------+
---   |  Agent 5 |  Agent 6 |       Agent 7       |  40%
---   +----------+----------+---------------------+
+-- CONFIG RELOAD TOAST  (Enhancement 4)
 -- ============================================================
-local function spawn_agent_layout(root_pane)
-  local bot1 = root_pane:split { direction='Bottom', size=0.4 }
-
-  local p2 = root_pane:split { direction='Right', size=0.75 }
-  local p3 = p2:split        { direction='Right', size=0.67 }
-  local p4 = p3:split        { direction='Right', size=0.50 }
-
-  local bot2 = bot1:split { direction='Right', size=0.67 }
-  local bot3 = bot2:split { direction='Right', size=0.50 }
-
-  local panes = { root_pane, p2, p3, p4, bot1, bot2, bot3 }
-  for i, p in ipairs(panes) do
-    p:send_text('$Host.UI.RawUI.WindowTitle = "Agent-' .. i .. '"; Clear-Host\r')
-  end
-end
+wezterm.on('window-config-reloaded', function(window, _)
+  pcall(function()
+    window:toast_notification('WezTerm', 'Config reloaded', nil, 2000)
+  end)
+end)
 
 -- ============================================================
 -- MUX STARTUP
---   Fires when the mux server initializes (fresh start or
---   `wezterm connect mux` from an external terminal).
---
 --   Priority order (mirrors tmux-continuum behaviour):
---     1. If any user workspace already exists → mux server is
---        still running from a previous GUI open; skip startup.
---     2. If ~/.wezterm_sessions/last.json exists → auto-restore
---        (tmux-continuum auto-restore on server start).
+--     1. Non-default workspace already exists → reattach, skip startup.
+--     2. ~/.wezterm_sessions/last.json exists → auto-restore.
 --     3. Otherwise → create default 'main' 2-pane workspace.
---
---   Auto-save timer is started in all branches.
+--   Auto-save timer started in all branches.
 -- ============================================================
 wezterm.on('mux-startup', function()
   local shell = pwsh and { pwsh, '-NoLogo' } or { 'powershell.exe', '-NoLogo' }
 
-  -- Guard: if any non-default workspace exists the mux server
-  -- is already populated — do not re-run startup logic.
   local ok_names, names = pcall(mux.get_workspace_names)
   if ok_names and names then
     for _, name in ipairs(names) do
@@ -973,11 +1235,9 @@ wezterm.on('mux-startup', function()
     end
   end
 
-  -- Auto-restore from last saved session (tmux-continuum style)
   local restored = do_restore_session(shell)
 
   if not restored then
-    -- No save file — create default 'main' workspace with 2-pane Work tab
     local tab, left, _ = mux.spawn_window { workspace = 'main', args = shell }
     tab:set_title('Work')
     left:split { direction = 'Right', size = 0.5, args = shell }
@@ -988,10 +1248,7 @@ wezterm.on('mux-startup', function()
 end)
 
 -- ============================================================
--- GUI STARTUP
---   Fires when the WezTerm GUI window opens.
---   Workspace creation is handled by mux-startup above.
---   This handler only maximizes the window.
+-- GUI STARTUP — maximize window on open
 -- ============================================================
 wezterm.on('gui-startup', function()
   local ok, wins = pcall(mux.all_windows)
