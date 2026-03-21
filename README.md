@@ -358,6 +358,10 @@ config.font_size = 14.0                   -- font size
 config.window_background_opacity = 0.97  -- 0.0 transparent, 1.0 solid
 config.leader = { key = 'a', mods = 'CTRL' }  -- change leader key
 
+-- Window decorations: 'TITLE | RESIZE' shows OS title bar with minimize/maximize/close buttons
+-- Change to 'RESIZE' to hide the title bar (buttons disappear), or 'NONE' for borderless
+config.window_decorations = 'TITLE | RESIZE'
+
 -- Change auto-save interval (seconds)
 local AUTOSAVE_SECS = 10 * 60  -- 10 minutes instead of 15
 
@@ -397,6 +401,16 @@ If nothing appears, reinstall the font. The config falls back to JetBrainsMono, 
 **Config not loading after install**
 
 WezTerm reads `~/.config/wezterm/wezterm.lua` first, then `~/.wezterm.lua`. The installer writes both. If neither loads, fully quit WezTerm from the system tray and reopen.
+
+---
+
+**Window title bar buttons (minimize / maximize / close) not showing**
+
+The config uses `config.window_decorations = 'TITLE | RESIZE'` which displays the OS title bar with all three window control buttons. If you previously had `'RESIZE'` in your config, the title bar was hidden. Re-download `wezterm.lua` or set:
+
+```lua
+config.window_decorations = 'TITLE | RESIZE'
+```
 
 ---
 
