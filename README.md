@@ -172,16 +172,18 @@ Each pane opens a PowerShell 7 session labelled Agent-1 through Agent-7. Other t
 
 WezTerm includes a built-in session server — like `tmux new-session` but with nothing extra to install.
 
-Connect from a new terminal window:
+**Auto-attach is enabled by default.** WezTerm starts a persistent mux server on launch and reconnects to your existing `main` workspace automatically. On first launch it opens a 2-pane layout in the `main` workspace.
+
+Connect manually from a new terminal window:
 
 ```powershell
 wezterm connect mux
 ```
 
-To auto-attach on every startup, uncomment this line in `wezterm.lua`:
+To disable auto-attach and use WezTerm without the persistent mux, comment out this line in `wezterm.lua`:
 
 ```lua
--- config.default_gui_startup_args = { 'connect', 'mux' }
+config.default_gui_startup_args = { 'connect', 'mux' }
 ```
 
 ---

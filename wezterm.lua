@@ -271,10 +271,11 @@ config.keys = {
   -- ── PANE SPLITTING ─────────────────────────────────────────
   -- LEADER+|  or  LEADER+%  → split right (vertical divider)
   -- LEADER+-  or  LEADER+"  → split down  (horizontal divider)
-  { key='|', mods='LEADER', action=act.SplitHorizontal { domain='CurrentPaneDomain' } },
-  { key='%', mods='LEADER', action=act.SplitHorizontal { domain='CurrentPaneDomain' } },
-  { key='-', mods='LEADER', action=act.SplitVertical   { domain='CurrentPaneDomain' } },
-  { key='"', mods='LEADER', action=act.SplitVertical   { domain='CurrentPaneDomain' } },
+  -- Note: |, %, " require LEADER|SHIFT because they need SHIFT on Windows keyboards
+  { key='|', mods='LEADER|SHIFT', action=act.SplitHorizontal { domain='CurrentPaneDomain' } },
+  { key='%', mods='LEADER|SHIFT', action=act.SplitHorizontal { domain='CurrentPaneDomain' } },
+  { key='-', mods='LEADER',       action=act.SplitVertical   { domain='CurrentPaneDomain' } },
+  { key='"', mods='LEADER|SHIFT', action=act.SplitVertical   { domain='CurrentPaneDomain' } },
 
   -- ── PANE NAVIGATION ────────────────────────────────────────
   { key='h',          mods='LEADER', action=act.ActivatePaneDirection 'Left'  },
@@ -563,26 +564,19 @@ end
 wezterm.on('gui-startup', function()
   local shell = pwsh and { pwsh, '-NoLogo' } or { 'powershell.exe', '-NoLogo' }
 
-  local wins = mux.all_windows()
-
-  if #wins > 0 then
-    -- connect-mux created a window already; use it instead of spawning a 2nd one
-    local w    = wins[1]
-    local tabs = w:tabs()
-    if #tabs > 0 then
-      local t     = tabs[1]
-      local panes = t:panes()
-      if #panes == 1 then
-        -- Fresh mux session: split the single pane into two
-        panes[1]:split { direction = 'Right', size = 0.5, args = shell }
-        t:set_title('Work')
+  -- If 'main' workspace already exists, just activate it (reconnecting to saved session)
+  local ok, names = pcall(mux.get_workspace_names)
+  if ok and names then
+    for _, name in ipairs(names) do
+      if name == 'main' then
+        mux.set_active_workspace('main')
+        return
       end
-      -- >1 pane means we reconnected to an existing session — leave it alone
     end
-    return
   end
 
-  -- No windows at all: create the 2-pane layout from scratch
+  -- First run: spawn fresh 2-pane Work tab in 'main' workspace
+  -- (any 'default' window pre-created by the mux server is left in background)
   local tab, left, win = mux.spawn_window { workspace = 'main', args = shell }
   tab:set_title('Work')
   pcall(function() win:gui_window():maximize() end)
