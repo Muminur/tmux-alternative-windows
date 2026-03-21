@@ -468,10 +468,20 @@ local function do_save_session()
     table.insert(session.workspaces, ws_data)
   end
 
+  -- Atomic write: write to .tmp first, then rotate last.json → prev.json, then rename .tmp → last.json
+  local tmp_file  = SESSION_FILE .. '.tmp'
+  local prev_file = SESSION_DIR  .. '/prev.json'
   local ok_write = pcall(function()
-    local f = assert(io.open(SESSION_FILE, 'w'))
+    local f = assert(io.open(tmp_file, 'w'))
     f:write(json_encode(session))
     f:close()
+    -- Backup existing save before replacing
+    local existing = io.open(SESSION_FILE, 'r')
+    if existing then
+      existing:close()
+      os.rename(SESSION_FILE, prev_file)
+    end
+    os.rename(tmp_file, SESSION_FILE)
   end)
 
   if ok_write then last_save_time = os.time() end
@@ -515,8 +525,8 @@ end
 
 -- ── Restore full session from save file ──────────────────────
 -- Returns true if any workspace was restored.
-local function do_restore_session(shell)
-  local f = io.open(SESSION_FILE, 'r')
+local function do_restore_session(shell, file_path)
+  local f = io.open(file_path or SESSION_FILE, 'r')
   if not f then return false end
   local content = f:read('*a')
   f:close()
@@ -694,6 +704,23 @@ config.keys = {
       end)
   end)},
 
+  -- LEADER + Ctrl+B  →  restore from previous backup (prev.json)
+  { key='b', mods='LEADER|CTRL', action=wezterm.action_callback(function(window, _)
+      local shell    = pwsh and { pwsh, '-NoLogo' } or { 'powershell.exe', '-NoLogo' }
+      local prev_file = SESSION_DIR .. '/prev.json'
+      local ok = do_restore_session(shell, prev_file)
+      pcall(function()
+        window:toast_notification(
+          'WezTerm Sessions',
+          ok and 'Backup session restored  ' or 'No backup session found',
+          nil, 3000
+        )
+      end)
+  end)},
+
+  -- ── DETACH  (tmux LEADER+d) — close GUI window, mux server keeps running ─
+  { key='d', mods='LEADER', action=act.QuitApplication },
+
   -- ── COPY / SEARCH ───────────────────────────────────────────
   { key='[',     mods='LEADER', action=act.ActivateCopyMode },
   { key='f',     mods='LEADER', action=act.Search { CaseSensitiveString='' } },
@@ -812,6 +839,19 @@ wezterm.on('update-status', function(window, pane)
     { Text = '  ' .. ws .. ' ' },
   }
 
+  -- Pane count for active tab
+  local ok_tab, active_tab = pcall(function() return window:active_tab() end)
+  if ok_tab and active_tab then
+    local ok_panes, tab_panes = pcall(function() return active_tab:panes() end)
+    if ok_panes and tab_panes and #tab_panes > 0 then
+      parts[#parts+1] = wezterm.format {
+        { Background = { Color = neon.bg_panel } },
+        { Foreground = { Color = neon.yellow   } },
+        { Text = '  ' .. #tab_panes .. 'p ' },
+      }
+    end
+  end
+
   -- Active process
   local ok_proc, proc = pcall(function() return pane:get_foreground_process_name() end)
   if not ok_proc then proc = '' end
@@ -831,7 +871,9 @@ wezterm.on('update-status', function(window, pane)
     for _, b in ipairs(bats) do
       local pct  = math.floor(b.state_of_charge * 100)
       local col  = pct > 30 and neon.green or neon.red
-      local icon = b.state == 'Charging' and ' ' or ' '
+      local icon = b.state == 'Charging'
+                 and wezterm.nerdfonts.md_battery_charging   -- named: charging bolt glyph
+                 or  wezterm.nerdfonts.md_battery_high       -- named: full battery glyph
       parts[#parts+1] = wezterm.format {
         { Background = { Color = neon.bg_alt } },
         { Foreground = { Color = col         } },
@@ -885,7 +927,7 @@ end)
 --   |  Agent 5 |  Agent 6 |       Agent 7       |  40%
 --   +----------+----------+---------------------+
 -- ============================================================
-function spawn_agent_layout(root_pane)
+local function spawn_agent_layout(root_pane)
   local bot1 = root_pane:split { direction='Bottom', size=0.4 }
 
   local p2 = root_pane:split { direction='Right', size=0.75 }

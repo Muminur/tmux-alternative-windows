@@ -11,6 +11,9 @@ param(
   [switch]$DryRun
 )
 
+# FiraCode Nerd Font version — update this when a newer release is available
+$FontVersion = '3.3.0'
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
@@ -67,7 +70,7 @@ if (-not $SkipFont) {
     Invoke-Step "Install FiraCode Nerd Font" {
       $zip  = "$env:TEMP\FiraCode.zip"
       $dest = "$env:TEMP\FiraCode"
-      $url  = 'https://github.com/ryanoasis/nerd-fonts/releases/download/v3.3.0/FiraCode.zip'
+      $url  = "https://github.com/ryanoasis/nerd-fonts/releases/download/v${FontVersion}/FiraCode.zip"
       Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
       Expand-Archive -Path $zip -DestinationPath $dest -Force
       if (-not (Test-Path $fontsDir)) { New-Item -ItemType Directory -Path $fontsDir -Force | Out-Null }
@@ -113,6 +116,19 @@ Invoke-Step "Download PS profile" {
   Invoke-WebRequest -Uri $profileUrl -OutFile $PROFILE -UseBasicParsing
 }
 OK "PowerShell profile installed"
+
+# 7. Post-install verification
+Say "Verifying WezTerm installation..."
+Invoke-Step "wezterm --version" {
+  $wezterm = Get-Command wezterm -ErrorAction SilentlyContinue
+  if ($wezterm) {
+    $ver = & wezterm --version 2>&1
+    OK "WezTerm found: $ver"
+  } else {
+    Write-Host "  WARN WezTerm not found in PATH — restart your terminal or log out/in." -ForegroundColor Yellow
+    Write-Host "       Installed location: C:\Program Files\WezTerm\wezterm.exe" -ForegroundColor DarkGray
+  }
+}
 
 Write-Host ""
 Write-Host "  Done! Close and reopen WezTerm." -ForegroundColor Green

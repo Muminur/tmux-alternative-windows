@@ -159,6 +159,7 @@ The leader key is **CTRL+B** — same as the tmux default.
 | `LEADER + W` | Create new named workspace |
 | `LEADER + $` | Rename current workspace |
 | `LEADER + D` | Connect to SSH domain |
+| `LEADER + d` | **Detach GUI** — closes the window, mux server keeps running |
 
 ### Session Save & Restore (tmux-resurrect style)
 
@@ -166,6 +167,7 @@ The leader key is **CTRL+B** — same as the tmux default.
 |-----------|--------|
 | `LEADER + Ctrl+S` | **Save session** — writes all workspaces/tabs/panes to disk |
 | `LEADER + Ctrl+R` | **Restore session** — recreates workspaces from last save |
+| `LEADER + Ctrl+B` | **Restore backup** — restores from the previous save (`prev.json`) |
 
 ### Copy Mode — Vim Keybindings
 
@@ -257,6 +259,10 @@ No — terminal output and running processes are not saved. This matches the beh
 **Q: How often does auto-save run?**
 
 Every 15 minutes, matching tmux-continuum's default interval. The green **SAVED** badge in the status bar confirms each save. To change the interval, edit `AUTOSAVE_SECS` in `wezterm.lua`.
+
+**Q: What is `prev.json` and how do I restore from it?**
+
+Every time a save runs (manual or auto), the previous `last.json` is renamed to `prev.json` before being replaced. This gives you one-step rollback to the prior snapshot — press `LEADER + Ctrl+B` to restore from it. It mirrors tmux-resurrect's own backup slot behavior.
 
 **Q: I closed WezTerm and my terminal output is gone. Can I get it back?**
 
@@ -437,6 +443,20 @@ Old config has `name = 'local'` in `unix_domains`. The current config uses `name
 **Session restore creates duplicate workspaces**
 
 Press `LEADER + Ctrl+R` only when starting fresh. If you already have workspaces open, the restore will add more (the existing ones are unaffected). Close unwanted workspaces with `LEADER + &`.
+
+---
+
+**`wezterm-mux-server.exe` is running in Task Manager — is that normal?**
+
+Yes. `wezterm-mux-server.exe` is the background process that keeps your sessions alive between GUI window opens. It is safe and expected — do not kill it unless you want to end all running sessions. Killing it is equivalent to `tmux kill-server`.
+
+If you want to stop it intentionally:
+
+```powershell
+Stop-Process -Name wezterm-mux-server -ErrorAction SilentlyContinue
+```
+
+The next time you open WezTerm, a new mux server starts automatically. Use `LEADER + Ctrl+S` before killing it to save your session first.
 
 ---
 
