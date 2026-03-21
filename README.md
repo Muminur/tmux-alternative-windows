@@ -240,13 +240,13 @@ WezTerm also auto-reads `~/.ssh/config` — no extra setup for hosts already def
 ### Step 1 — Install WezTerm
 
 ```powershell
-winget install --id WezFurlong.WezTerm
+winget install --id WezFurlong.WezTerm --source winget
 ```
 
 ### Step 2 — Install PowerShell 7
 
 ```powershell
-winget install --id Microsoft.PowerShell
+winget install --id Microsoft.PowerShell --source winget
 ```
 
 ### Step 3 — Install FiraCode Nerd Font
@@ -293,6 +293,19 @@ config.ssh_domains = {
 ---
 
 ## Troubleshooting
+
+**winget error: "Failed when searching source: msstore" / certificate error 0x8a15005e**
+
+The Microsoft Store source sometimes has SSL certificate issues on corporate or restricted networks. Add `--source winget` to skip the msstore source and use the winget community repository directly:
+
+```powershell
+winget install --id WezFurlong.WezTerm --source winget
+winget install --id Microsoft.PowerShell --source winget
+```
+
+The installer script (`install.ps1`) already includes `--source winget` so the one-line install is unaffected.
+
+---
 
 **Font shows boxes or question marks**
 

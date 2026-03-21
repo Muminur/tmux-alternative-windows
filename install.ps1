@@ -36,7 +36,7 @@ if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
 if (-not $SkipWezTerm) {
   Say "Installing WezTerm..."
   Invoke-Step "winget install WezFurlong.WezTerm" {
-    winget install --id WezFurlong.WezTerm --silent --accept-package-agreements --accept-source-agreements
+    winget install --id WezFurlong.WezTerm --silent --accept-package-agreements --accept-source-agreements --source winget
   }
   OK "WezTerm installed"
 }
@@ -49,7 +49,7 @@ if (-not $SkipPS7) {
   } else {
     Say "Installing PowerShell 7..."
     Invoke-Step "winget install Microsoft.PowerShell" {
-      winget install --id Microsoft.PowerShell --silent --accept-package-agreements --accept-source-agreements
+      winget install --id Microsoft.PowerShell --silent --accept-package-agreements --accept-source-agreements --source winget
     }
     OK "PowerShell 7 installed"
   }
