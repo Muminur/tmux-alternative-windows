@@ -349,6 +349,20 @@ Copy-Item "$env:USERPROFILE\.config\wezterm\wezterm.lua" "$env:USERPROFILE\.wezt
 
 ---
 
+## Install Locations
+
+| Component | Default path |
+|-----------|-------------|
+| WezTerm binary | `C:\Program Files\WezTerm\` |
+| PowerShell 7 | `C:\Program Files\PowerShell\7\` |
+| FiraCode Nerd Font | `%LOCALAPPDATA%\Microsoft\Windows\Fonts\` |
+| WezTerm config (primary) | `%USERPROFILE%\.config\wezterm\wezterm.lua` |
+| WezTerm config (fallback) | `%USERPROFILE%\.wezterm.lua` |
+| PowerShell profile | `%USERPROFILE%\Documents\PowerShell\Microsoft.PowerShell_profile.ps1` |
+| Session save directory | `%USERPROFILE%\.wezterm_sessions\` |
+
+---
+
 ## Customising
 
 The config lives at `~/.config/wezterm/wezterm.lua`. WezTerm hot-reloads on save — press `LEADER + r` to force reload.
