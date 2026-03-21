@@ -109,7 +109,7 @@ config.window_background_opacity = 0.97
 config.text_background_opacity   = 1.0
 config.win32_system_backdrop     = 'Acrylic'
 
-config.window_decorations = 'RESIZE'
+config.window_decorations = 'TITLE | RESIZE'
 config.window_padding = { left = 6, right = 6, top = 4, bottom = 0 }
 
 config.window_frame = {
