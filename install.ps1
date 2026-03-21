@@ -83,7 +83,7 @@ if (-not $SkipFont) {
 }
 
 # 4. WezTerm config
-Say "Installing WezTerm config (neon dark, tmux keys, 7-pane layout)..."
+Say "Installing WezTerm config (neon dark, tmux keys, session save/restore)..."
 $cfgDir  = "$env:USERPROFILE\.config\wezterm"
 $cfgFile = Join-Path $cfgDir 'wezterm.lua'
 $cfgUrl  = 'https://raw.githubusercontent.com/Muminur/tmux-alternative-windows/main/wezterm.lua'
@@ -94,7 +94,17 @@ Invoke-Step "Download wezterm.lua" {
 }
 OK "Config saved (also copied to ~/.wezterm.lua)"
 
-# 5. PowerShell profile
+# 5. Session directory for save/restore
+Say "Creating session save directory (~/.wezterm_sessions)..."
+Invoke-Step "Create ~/.wezterm_sessions" {
+  $sessDir = "$env:USERPROFILE\.wezterm_sessions"
+  if (-not (Test-Path $sessDir)) {
+    New-Item -ItemType Directory -Path $sessDir -Force | Out-Null
+  }
+}
+OK "Session directory ready"
+
+# 6. PowerShell profile
 Say "Installing neon PowerShell profile..."
 $profileUrl = 'https://raw.githubusercontent.com/Muminur/tmux-alternative-windows/main/Microsoft.PowerShell_profile.ps1'
 Invoke-Step "Download PS profile" {
@@ -107,7 +117,17 @@ OK "PowerShell profile installed"
 Write-Host ""
 Write-Host "  Done! Close and reopen WezTerm." -ForegroundColor Green
 Write-Host "  Leader key: CTRL+B (like tmux)" -ForegroundColor Cyan
-Write-Host "    LEADER+|  split right    LEADER+A  7-pane agent layout" -ForegroundColor White
-Write-Host "    LEADER+-  split down     LEADER+[  copy mode (vim keys)" -ForegroundColor White
-Write-Host "    LEADER+hjkl navigate     LEADER+w  workspace switcher" -ForegroundColor White
+Write-Host ""
+Write-Host "  Panes & Tabs:" -ForegroundColor White
+Write-Host "    LEADER+|  split right    LEADER+-  split down" -ForegroundColor DarkGray
+Write-Host "    LEADER+hjkl navigate     LEADER+c  new tab" -ForegroundColor DarkGray
+Write-Host "    LEADER+A  7-pane agent layout" -ForegroundColor DarkGray
+Write-Host ""
+Write-Host "  Session Save & Restore (tmux-resurrect style):" -ForegroundColor White
+Write-Host "    LEADER+Ctrl+S  save session to disk" -ForegroundColor DarkGray
+Write-Host "    LEADER+Ctrl+R  restore session from disk" -ForegroundColor DarkGray
+Write-Host "    Auto-saves every 15 minutes automatically" -ForegroundColor DarkGray
+Write-Host "    Auto-restores on WezTerm startup if a save exists" -ForegroundColor DarkGray
+Write-Host ""
+Write-Host "  Session save file: $env:USERPROFILE\.wezterm_sessions\last.json" -ForegroundColor DarkCyan
 Write-Host ""

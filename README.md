@@ -34,7 +34,7 @@ This installs and configures **everything automatically**:
 | 1 | **WezTerm** | GPU-accelerated terminal with built-in multiplexer |
 | 2 | **PowerShell 7** | Modern shell with ANSI colour support |
 | 3 | **FiraCode Nerd Font** | Programming font with ligatures + Nerd Font glyphs |
-| 4 | **wezterm.lua** | Neon dark theme, tmux keybindings, 7-pane agent layout |
+| 4 | **wezterm.lua** | Neon dark theme, tmux keybindings, session save/restore |
 | 5 | **PS7 profile** | Neon prompt and syntax highlighting |
 
 > **Requirement:** Windows 10/11 with `winget` (App Installer from the Microsoft Store)
@@ -65,6 +65,8 @@ tmux requires WSL or Cygwin on Windows — it is a Linux tool bolted onto Window
 |---------|:---:|:---:|
 | Pane splitting | Yes | Yes |
 | Persistent sessions | Yes | Yes |
+| Session save & restore | tmux-resurrect plugin | **Built-in** |
+| Auto-save every 15 min | tmux-continuum plugin | **Built-in** |
 | Vim-style copy mode | Yes | Yes |
 | Named workspaces / sessions | Yes | Yes |
 | SSH remote sessions | Yes | Yes |
@@ -74,6 +76,48 @@ tmux requires WSL or Cygwin on Windows — it is a Linux tool bolted onto Window
 | Lua scripting and automation | No | **Yes** |
 | Window transparency and blur | No | **Yes** |
 | One-command install | No | **Yes** |
+
+---
+
+## Session Save & Restore (tmux-resurrect / tmux-continuum)
+
+This config implements the same session persistence policy as the popular tmux plugins:
+
+| tmux plugin | WezTerm equivalent |
+|------------|-------------------|
+| `tmux-resurrect` — manual save/restore | `LEADER + Ctrl+S` / `LEADER + Ctrl+R` |
+| `tmux-continuum` — auto-save every 15 min | Built-in auto-save timer |
+| `tmux-continuum` — auto-restore on start | Auto-restores on mux server startup |
+
+**What is saved:**
+- All workspace names (equivalent to tmux sessions)
+- All tab titles (equivalent to tmux windows)
+- All pane working directories
+- Pane layout (split directions reconstructed from saved positions)
+
+**Save file:** `%USERPROFILE%\.wezterm_sessions\last.json`
+
+### How it works
+
+```
+On startup:
+  1. Check if mux server already has workspaces → if yes, reattach (no restart)
+  2. Check if ~/.wezterm_sessions/last.json exists → if yes, restore it
+  3. Otherwise → create default 'main' workspace with 2-pane layout
+
+Every 15 minutes:
+  Auto-save all workspaces to last.json
+
+LEADER + Ctrl+S:
+  Save immediately + show "SAVED" in status bar for 30 seconds
+
+LEADER + Ctrl+R:
+  Restore from last.json into current session (adds workspaces)
+```
+
+### Status bar indicator
+
+After a save (manual or auto), the status bar shows a green **SAVED** badge for 30 seconds so you can confirm the save completed.
 
 ---
 
@@ -115,6 +159,13 @@ The leader key is **CTRL+B** — same as the tmux default.
 | `LEADER + W` | Create new named workspace |
 | `LEADER + $` | Rename current workspace |
 | `LEADER + D` | Connect to SSH domain |
+
+### Session Save & Restore (tmux-resurrect style)
+
+| Keybinding | Action |
+|-----------|--------|
+| `LEADER + Ctrl+S` | **Save session** — writes all workspaces/tabs/panes to disk |
+| `LEADER + Ctrl+R` | **Restore session** — recreates workspaces from last save |
 
 ### Copy Mode — Vim Keybindings
 
@@ -172,7 +223,7 @@ Each pane opens a PowerShell 7 session labelled Agent-1 through Agent-7. Other t
 
 WezTerm includes a built-in session server — like `tmux new-session` but with nothing extra to install.
 
-**Auto-attach is enabled by default.** WezTerm starts a persistent mux server on launch and reconnects to your existing `main` workspace automatically. On first launch it opens a 2-pane layout in the `main` workspace.
+**Auto-attach is enabled by default.** WezTerm starts a persistent mux server on launch and reconnects to your existing workspaces automatically.
 
 Connect manually from a new terminal window:
 
@@ -180,30 +231,40 @@ Connect manually from a new terminal window:
 wezterm connect mux
 ```
 
-This also correctly initialises the `main` workspace with a 2-pane layout when the mux server starts fresh — whether you open WezTerm normally or run `wezterm connect mux` from an external terminal.
-
 ### Safely closing WezTerm (preserving your session)
 
 | Action | What happens | Session preserved? |
 |--------|-------------|-------------------|
-| Close the WezTerm **window** (X button / Alt+F4) | GUI closes, mux server keeps running | ✅ Yes |
-| Open WezTerm again | Auto-reconnects to running mux server, all panes intact | ✅ Yes |
-| Say **Yes** to "kill all panes?" | Processes are killed, session is gone | ❌ No |
-| `CTRL+D` in a shell | Exits that shell, closes that pane only | ❌ That pane |
+| Close the WezTerm **window** (X button / Alt+F4) | GUI closes, mux server keeps running | Yes |
+| Open WezTerm again | Auto-reconnects to running mux server, all panes intact | Yes |
+| Say **Yes** to "kill all panes?" | Processes are killed, session is gone | No |
+| `CTRL+D` in a shell | Exits that shell, closes that pane only | That pane lost |
 
-**Rule of thumb:** To preserve your session, always close the WezTerm **window** — never say "yes" to killing panes. The mux server (`wezterm-mux-server.exe`) continues running in the background and your panes stay alive.
+**Rule of thumb:** To preserve your session without a save file, always close the WezTerm **window** — never say "yes" to killing panes. The mux server (`wezterm-mux-server.exe`) keeps running in the background.
+
+With session save/restore (`LEADER + Ctrl+S`), you can safely kill the mux server and fully restore your workspace layout on next startup.
 
 ### Session Persistence FAQ
 
-**Q: I closed WezTerm and my terminal output (ipconfig results, command output) is gone. Can I get it back?**
+**Q: What does LEADER+Ctrl+S save?**
 
-No — terminal output cannot be restored after the mux server restarts. The scrollback buffer lives in RAM. Once the server exits (you said "yes" to killing panes, or the process crashed), the output is permanently gone. This is a fundamental property of all terminal multiplexers — tmux, screen, and WezTerm all behave the same way.
+It saves all workspace names, tab titles, and pane working directories to `%USERPROFILE%\.wezterm_sessions\last.json`. On the next startup (or when you press LEADER+Ctrl+R), WezTerm recreates those workspaces and opens panes in the correct directories.
 
-To keep your output: close the WezTerm **window** (X / Alt+F4) instead of killing panes. The server stays running and all output is preserved.
+**Q: Does it save running processes?**
+
+No — terminal output and running processes are not saved. This matches the behaviour of tmux-resurrect (which also cannot restore arbitrary process state). Your shell restarts fresh in the correct working directory.
+
+**Q: How often does auto-save run?**
+
+Every 15 minutes, matching tmux-continuum's default interval. The green **SAVED** badge in the status bar confirms each save. To change the interval, edit `AUTOSAVE_SECS` in `wezterm.lua`.
+
+**Q: I closed WezTerm and my terminal output is gone. Can I get it back?**
+
+No — terminal output lives in RAM. Once the mux server exits, the scrollback is permanently gone. This is a fundamental property of all terminal multiplexers (tmux, screen, WezTerm). Use `LEADER+Ctrl+S` before closing to save your workspace layout.
 
 **Q: My typed commands are gone too — can I get those back?**
 
-Yes — PowerShell command history **is** preserved automatically by PSReadLine, regardless of WezTerm restarts. Press the **Up arrow** (↑) after reopening and your previous commands are still there.
+Yes — PowerShell command history is preserved automatically by PSReadLine, regardless of WezTerm restarts. Press the **Up arrow** after reopening to access your previous commands.
 
 History is saved to:
 ```
@@ -212,15 +273,7 @@ History is saved to:
 
 **Q: How much scrollback history is kept during a live session?**
 
-20 000 lines (configurable via `config.scrollback_lines` in `wezterm.lua`). Use `LEADER+f` to search the scrollback, or `CTRL+SHIFT+K` to clear it.
-
-> **Note:** If you see `pane id 0 not found in mux` errors in the status bar after reconnecting, this is fixed — `get_foreground_process_name()` is wrapped in `pcall()` so stale pane references no longer crash the status bar.
-
-To disable auto-attach and use WezTerm without the persistent mux, comment out this line in `wezterm.lua`:
-
-```lua
-config.default_gui_startup_args = { 'connect', 'mux' }
-```
+20,000 lines (configurable via `config.scrollback_lines` in `wezterm.lua`). Use `LEADER+f` to search the scrollback, or `CTRL+SHIFT+K` to clear it.
 
 ---
 
@@ -245,9 +298,9 @@ WezTerm also auto-reads `~/.ssh/config` — no extra setup for hosts already def
 |---------|-------|
 | Background | `#0d0d1a` (near-black indigo) |
 | Foreground | `#ffffff` (pure white) |
-| Cyan accent | `#00ffe1` (splits, active tab) |
+| Cyan accent | `#00ffe1` (splits, active tab, workspace badge) |
 | Magenta | `#ff00aa` (leader key indicator) |
-| Green | `#00ff88` |
+| Green | `#00ff88` (session saved badge) |
 | Yellow | `#ffe566` |
 | Cursor | Blinking cyan bar |
 | Backdrop | Windows Acrylic blur |
@@ -305,6 +358,9 @@ config.font_size = 14.0                   -- font size
 config.window_background_opacity = 0.97  -- 0.0 transparent, 1.0 solid
 config.leader = { key = 'a', mods = 'CTRL' }  -- change leader key
 
+-- Change auto-save interval (seconds)
+local AUTOSAVE_SECS = 10 * 60  -- 10 minutes instead of 15
+
 -- Add SSH servers
 config.ssh_domains = {
   { name = 'myserver', remote_address = '192.168.1.1', username = 'admin' },
@@ -317,14 +373,14 @@ config.ssh_domains = {
 
 **winget error: "Failed when searching source: msstore" / certificate error 0x8a15005e**
 
-The Microsoft Store source sometimes has SSL certificate issues on corporate or restricted networks. Add `--source winget` to skip the msstore source and use the winget community repository directly:
+The Microsoft Store source sometimes has SSL certificate issues on corporate or restricted networks. Add `--source winget` to skip the msstore source:
 
 ```powershell
 winget install --id WezFurlong.WezTerm --source winget
 winget install --id Microsoft.PowerShell --source winget
 ```
 
-The installer script (`install.ps1`) already includes `--source winget` so the one-line install is unaffected.
+The installer script already includes `--source winget`.
 
 ---
 
@@ -336,13 +392,25 @@ wezterm ls-fonts --list-system | Select-String fira
 
 If nothing appears, reinstall the font. The config falls back to JetBrainsMono, then Cascadia Code, then Consolas.
 
+---
+
 **Config not loading after install**
 
 WezTerm reads `~/.config/wezterm/wezterm.lua` first, then `~/.wezterm.lua`. The installer writes both. If neither loads, fully quit WezTerm from the system tray and reopen.
 
+---
+
 **Error: "local is a built-in domain"**
 
 Old config has `name = 'local'` in `unix_domains`. The current config uses `name = 'mux'`. Re-download `wezterm.lua` to fix.
+
+---
+
+**Session restore creates duplicate workspaces**
+
+Press `LEADER + Ctrl+R` only when starting fresh. If you already have workspaces open, the restore will add more (the existing ones are unaffected). Close unwanted workspaces with `LEADER + &`.
+
+---
 
 **WSL errors in panes on startup**
 
@@ -359,7 +427,7 @@ wsl --install
 ```
 tmux-alternative-windows/
 ├── install.ps1                       # One-line installer script
-├── wezterm.lua                       # Full WezTerm Lua config
+├── wezterm.lua                       # Full WezTerm Lua config (session save/restore included)
 ├── Microsoft.PowerShell_profile.ps1  # Neon PS7 profile
 ├── screenshots/
 │   ├── wezterm-2pane-neon.png        # 2-pane neon dark layout
@@ -384,6 +452,8 @@ Open an issue or pull request. Suggestions welcome for:
 
 - [WezTerm official documentation](https://wezfurlong.org/wezterm/)
 - [WezTerm Lua API reference](https://wezfurlong.org/wezterm/config/lua/general.html)
+- [tmux-resurrect](https://github.com/tmux-plugins/tmux-resurrect) — the tmux plugin this feature mirrors
+- [tmux-continuum](https://github.com/tmux-plugins/tmux-continuum) — the tmux plugin this auto-save mirrors
 - [FiraCode Nerd Font releases](https://github.com/ryanoasis/nerd-fonts/releases)
 - [PowerShell 7 on GitHub](https://github.com/PowerShell/PowerShell)
 
