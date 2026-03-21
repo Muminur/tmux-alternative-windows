@@ -323,7 +323,7 @@ local function json_decode(s)
       if c == '\\' then
         pos = pos + 1
         c = s:sub(pos, pos)
-        local esc = { ['"']='"', ['\\']='\\', ['/']='\/', n='\n', r='\r', t='\t', b='\b', f='\f' }
+        local esc = { ['"']='"', ['\\']='\\', ['/']='/',  n='\n', r='\r', t='\t', b='\b', f='\f' }
         buf[#buf+1] = esc[c] or c
       else
         buf[#buf+1] = c
