@@ -117,9 +117,9 @@ config.cell_width  = 1.0
 config.initial_cols = 230
 config.initial_rows = 56
 
-config.window_background_opacity = 0.97
+config.window_background_opacity = 1.0   -- was 0.97; opacity < 1.0 forces compositor on every frame
 config.text_background_opacity   = 1.0
-config.win32_system_backdrop     = 'Acrylic'
+config.win32_system_backdrop     = 'Disable'  -- was 'Acrylic'; Acrylic blur is the #1 typing-lag cause on Windows
 
 config.window_decorations = 'TITLE | RESIZE'
 config.window_padding = { left = 6, right = 6, top = 4, bottom = 0 }
@@ -647,7 +647,7 @@ end
 
 -- ============================================================
 -- GIT BRANCH HELPER  (Enhancement 5)
--- Cached for 10 seconds per directory to avoid spawning git
+-- Cached for 30 seconds per directory to avoid spawning git
 -- on every status-bar repaint (~1 s interval).
 -- ============================================================
 local function get_git_branch(cwd)
@@ -665,7 +665,7 @@ local function get_git_branch(cwd)
     if #b > 0 and b ~= 'HEAD' then branch = b end
   end
 
-  git_branch_cache[cwd] = { branch = branch, expires = now + 10 }
+  git_branch_cache[cwd] = { branch = branch, expires = now + 30 }
   return branch
 end
 
@@ -1137,7 +1137,7 @@ wezterm.on('update-status', function(window, pane)
     }
   end
 
-  -- Enhancement 5: Git branch (cached 10 s per cwd)
+  -- Enhancement 5: Git branch (cached 30 s per cwd)
   local ok_cwd, cwd_obj = pcall(function() return pane:get_current_working_dir() end)
   if ok_cwd and cwd_obj then
     local cwd_path = normalize_cwd(cwd_obj)
@@ -1285,6 +1285,11 @@ config.launch_menu = {
 -- ============================================================
 -- MISC
 -- ============================================================
+-- ── Performance ────────────────────────────────────────────────
+config.max_fps                                  = 60    -- cap render rate; prevents GPU thrash
+config.animation_fps                            = 10    -- cursor blink / scroll animations
+config.status_update_interval                   = 1000  -- ms; keep at 1s for Leader WAIT badge visibility (leader timeout = 2s)
+
 config.automatically_reload_config              = true
 config.check_for_updates                        = true
 config.check_for_updates_interval_seconds       = 86400

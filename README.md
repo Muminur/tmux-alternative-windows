@@ -403,7 +403,7 @@ WezTerm also auto-reads `~/.ssh/config` — no extra setup for hosts already def
 | Green | `#00ff88` (session saved badge) |
 | Yellow | `#ffe566` (pane count, git branch, zoom badge) |
 | Cursor | Blinking cyan bar |
-| Backdrop | Windows Acrylic blur |
+| Backdrop | Solid (backdrop blur disabled for input latency) |
 | Font | FiraCode Nerd Font Medium 14px |
 | Ligatures | calt, clig, liga, ss01, ss03, ss05 |
 
@@ -488,7 +488,7 @@ The config lives at `~/.config/wezterm/wezterm.lua`. WezTerm hot-reloads on save
 
 ```lua
 config.font_size = 14.0                   -- font size
-config.window_background_opacity = 0.97  -- 0.0 transparent, 1.0 solid
+config.window_background_opacity = 1.0   -- 0.0 transparent, 1.0 solid (default: solid for best input latency)
 config.leader = { key = 'a', mods = 'CTRL' }  -- change leader key
 
 -- Window decorations: 'TITLE | RESIZE' shows OS title bar with minimize/maximize/close buttons
@@ -594,7 +594,7 @@ wsl --install
 
 **Git branch not showing in status bar**
 
-The status bar queries `git` in the background for the active pane's directory. If git is not in PATH or the directory is not a git repo, the branch segment is hidden. Results are cached for 10 seconds per directory to avoid performance impact.
+The status bar queries `git` in the background for the active pane's directory. If git is not in PATH or the directory is not a git repo, the branch segment is hidden. Results are cached for 30 seconds per directory to avoid performance impact.
 
 ---
 
