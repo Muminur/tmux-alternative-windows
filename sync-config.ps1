@@ -1,16 +1,23 @@
-# Sync repo wezterm.lua → active config (~/.wezterm.lua)
+# Sync repo wezterm.lua → both active config locations
 # Usage:
 #   .\sync-config.ps1          — one-shot copy
 #   .\sync-config.ps1 -Watch   — watch for changes and auto-sync
 
 param([switch]$Watch)
 
-$Source = Join-Path $PSScriptRoot 'wezterm.lua'
-$Target = Join-Path $env:USERPROFILE '.wezterm.lua'
+$Source  = Join-Path $PSScriptRoot 'wezterm.lua'
+$Targets = @(
+    (Join-Path $env:USERPROFILE '.config\wezterm\wezterm.lua'),
+    (Join-Path $env:USERPROFILE '.wezterm.lua')
+)
 
 function Sync-Config {
-    Copy-Item $Source $Target -Force
-    Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Synced → $Target" -ForegroundColor Green
+    foreach ($t in $Targets) {
+        $dir = Split-Path $t -Parent
+        if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        Copy-Item $Source $t -Force
+        Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Synced → $t" -ForegroundColor Green
+    }
 }
 
 if (-not (Test-Path $Source)) {

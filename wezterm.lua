@@ -1,23 +1,32 @@
 -- ============================================================
---  WezTerm — Full-Featured Config
---  Theme     : Neon Dark (custom)
+--  WezTerm — Full-Featured tmux-Alternative Config
+--  Theme     : NeonDark / NeonLight (toggle: LEADER+Shift+T)
 --  Font      : FiraCode Nerd Font (ligatures on)
 --  Shell     : PowerShell 7 (PS5 fallback)
---  Agents    : 7-pane Claude Code workspace on startup
+--  Agents    : 7-pane agent grid workspace on startup
 --  Work tab  : 2-pane side-by-side
 --  Leader    : CTRL+B  (tmux default)
 --  Mux       : built-in workspaces (session save/restore via JSON)
 --  Sessions  : tmux-resurrect/continuum style save & restore
 --              LEADER+Ctrl+S = save   LEADER+Ctrl+R = restore
---              LEADER+Ctrl+N = save named session
---              LEADER+Ctrl+L = list & restore named session
---              LEADER+Ctrl+D = delete named session
+--              LEADER+Ctrl+N = save named   LEADER+Ctrl+L = restore named
+--              LEADER+Ctrl+D = delete named
 --              Auto-saves every 15 min, auto-restores on start
+--              Auto-prunes oldest sessions beyond 20 named saves
 --  Layouts   : LEADER+A        = 7-pane agent grid
 --              LEADER+Shift+2  = 2-pane side-by-side
 --              LEADER+Shift+3  = 3-pane code layout
+--  Navigation: ALT+h/j/k/l or ALT+Arrows = pane nav (no leader)
+--              ALT+1–9        = workspace switch by index
+--  Tabs      : LEADER+< / >   = reorder tabs
+--              LEADER+!       = break pane out to new tab
+--  Modes     : LEADER+:       = command palette
+--              LEADER+R       = toggle read-only pane indicator
+--  Copy mode : full vim motions (^, H/M/L, f/F/t/T, ;/,)
 --  Broadcast : LEADER+Ctrl+X  = send text to all panes
---  Status    : zoom indicator, git branch, workspace, battery
+--  Bell      : toast notification for bells in unfocused panes
+--  Status    : LEFT:  workspace, WAIT, ZOOM, RO, SAVED, pane count
+--              RIGHT: process, git branch, battery, clock
 -- ============================================================
 
 local wezterm = require 'wezterm'
@@ -29,6 +38,8 @@ local config  = wezterm.config_builder()
 -- Per-window state (keyed by window_id)
 local sync_windows  = {}  -- reserved for future sync-mode extensions
 local git_branch_cache = {} -- cwd -> { branch, expires }
+local readonly_panes = {} -- pane_id -> true for read-only panes
+local current_theme = 'NeonDark' -- toggles between NeonDark / NeonLight
 
 -- ============================================================
 -- NEON DARK COLOR SCHEME
@@ -85,6 +96,40 @@ config.color_schemes = {
       inactive_tab_hover = { bg_color = neon.bg_sel,   fg_color = neon.fg      },
       new_tab            = { bg_color = neon.bg,        fg_color = neon.cyan   },
       new_tab_hover      = { bg_color = neon.bg_panel,  fg_color = neon.magenta},
+    },
+  },
+  ['NeonLight'] = {
+    background    = '#f5f5fa',
+    foreground    = '#1a1a2e',
+    cursor_bg     = '#0077aa',
+    cursor_border = '#0077aa',
+    cursor_fg     = '#f5f5fa',
+    selection_bg  = '#d0d0e8',
+    selection_fg  = '#1a1a2e',
+    scrollbar_thumb  = '#0077aa',
+    split            = '#0077aa',
+    compose_cursor   = '#cc6600',
+    visual_bell      = '#cc0066',
+
+    ansi = {
+      '#e0e0e8', '#cc2244', '#007744', '#997700',
+      '#0055aa', '#8800aa', '#007799', '#1a1a2e',
+    },
+    brights = {
+      '#c0c0d0', '#ff4466', '#22aa66', '#bbaa22',
+      '#3388cc', '#aa44cc', '#22aabb', '#0d0d1a',
+    },
+
+    tab_bar = {
+      background = '#e8e8f0',
+      active_tab = {
+        bg_color  = '#0077aa', fg_color = '#f5f5fa',
+        intensity = 'Bold',
+      },
+      inactive_tab       = { bg_color = '#d8d8e4', fg_color = '#555577' },
+      inactive_tab_hover = { bg_color = '#c8c8d8', fg_color = '#1a1a2e' },
+      new_tab            = { bg_color = '#e8e8f0', fg_color = '#0077aa' },
+      new_tab_hover      = { bg_color = '#d8d8e4', fg_color = '#cc0066' },
     },
   },
 }
@@ -430,6 +475,29 @@ local function list_session_files()
   return sessions
 end
 
+-- ── Auto-prune named sessions (keep newest MAX_NAMED_SESSIONS) ──
+local MAX_NAMED_SESSIONS = 20
+
+local function prune_named_sessions()
+  local dir = SESSION_DIR:gsub('/', '\\')
+  local entries = {}
+  local f = io.popen('cmd /c forfiles /P "' .. dir .. '" /M *.json /C "cmd /c echo @fname @fdate @ftime" 2>nul')
+  if not f then return end
+  for line in f:lines() do
+    local name = line:match('^(%S+)')
+    if name and name ~= 'last' and name ~= 'prev' then
+      entries[#entries+1] = { name = name, line = line }
+    end
+  end
+  f:close()
+  if #entries <= MAX_NAMED_SESSIONS then return end
+  table.sort(entries, function(a, b) return a.line > b.line end)
+  for i = MAX_NAMED_SESSIONS + 1, #entries do
+    local path = SESSION_DIR .. '/' .. entries[i].name .. '.json'
+    pcall(os.remove, path)
+  end
+end
+
 -- ── Save current session ──────────────────────────────────────
 -- dest_file: optional path; defaults to SESSION_FILE (last.json).
 -- Only the main slot (last.json) rotates prev.json and updates last_save_time.
@@ -520,6 +588,7 @@ local function do_save_session(dest_file)
   end)
 
   if ok_write and is_main then last_save_time = os.time() end
+  if ok_write and not is_main then pcall(prune_named_sessions) end
   return ok_write
 end
 
@@ -565,6 +634,17 @@ local function do_restore_session(shell, file_path)
   if not (session and session.workspaces and #session.workspaces > 0) then
     return false
   end
+
+  -- Skip restore if session is trivial (single pane) — let the default 2-pane layout kick in
+  local total_panes = 0
+  for _, ws in ipairs(session.workspaces) do
+    for _, win in ipairs(ws.windows or {}) do
+      for _, tab in ipairs(win.tabs or {}) do
+        total_panes = total_panes + #(tab.panes or {})
+      end
+    end
+  end
+  if total_panes <= 1 then return false end
 
   local any_restored = false
 
@@ -705,11 +785,33 @@ end
 -- ============================================================
 config.keys = {
 
-  -- ── PANE SPLITTING ─────────────────────────────────────────
-  { key='|', mods='LEADER|SHIFT', action=act.SplitHorizontal { domain='CurrentPaneDomain' } },
-  { key='%', mods='LEADER|SHIFT', action=act.SplitHorizontal { domain='CurrentPaneDomain' } },
-  { key='-', mods='LEADER',       action=act.SplitVertical   { domain='CurrentPaneDomain' } },
-  { key='"', mods='LEADER|SHIFT', action=act.SplitVertical   { domain='CurrentPaneDomain' } },
+  -- ── ALT+ARROW / ALT+HJKL PANE NAVIGATION (no leader) ─────
+  { key='h',          mods='ALT', action=act.ActivatePaneDirection 'Left'  },
+  { key='j',          mods='ALT', action=act.ActivatePaneDirection 'Down'  },
+  { key='k',          mods='ALT', action=act.ActivatePaneDirection 'Up'    },
+  { key='l',          mods='ALT', action=act.ActivatePaneDirection 'Right' },
+  { key='LeftArrow',  mods='ALT', action=act.ActivatePaneDirection 'Left'  },
+  { key='DownArrow',  mods='ALT', action=act.ActivatePaneDirection 'Down'  },
+  { key='UpArrow',    mods='ALT', action=act.ActivatePaneDirection 'Up'    },
+  { key='RightArrow', mods='ALT', action=act.ActivatePaneDirection 'Right' },
+
+  -- ── PANE SPLITTING (explicit cwd from active pane) ─────────
+  { key='|', mods='LEADER|SHIFT', action=wezterm.action_callback(function(_, pane)
+      local cwd = pane:get_current_working_dir()
+      pane:split { direction = 'Right', cwd = cwd and normalize_cwd(cwd) or nil }
+  end)},
+  { key='%', mods='LEADER|SHIFT', action=wezterm.action_callback(function(_, pane)
+      local cwd = pane:get_current_working_dir()
+      pane:split { direction = 'Right', cwd = cwd and normalize_cwd(cwd) or nil }
+  end)},
+  { key='-', mods='LEADER', action=wezterm.action_callback(function(_, pane)
+      local cwd = pane:get_current_working_dir()
+      pane:split { direction = 'Bottom', cwd = cwd and normalize_cwd(cwd) or nil }
+  end)},
+  { key='"', mods='LEADER|SHIFT', action=wezterm.action_callback(function(_, pane)
+      local cwd = pane:get_current_working_dir()
+      pane:split { direction = 'Bottom', cwd = cwd and normalize_cwd(cwd) or nil }
+  end)},
 
   -- ── PANE NAVIGATION ────────────────────────────────────────
   { key='h',          mods='LEADER', action=act.ActivatePaneDirection 'Left'  },
@@ -734,6 +836,18 @@ config.keys = {
   { key='}', mods='LEADER|SHIFT', action=act.RotatePanes 'Clockwise' },
   { key='o', mods='LEADER', action=act.PaneSelect },
   { key='q', mods='LEADER', action=act.PaneSelect { mode='SwapWithActiveKeepFocus' } },
+
+  -- ── TAB REORDERING ──────────────────────────────────────────
+  { key='<', mods='LEADER|SHIFT', action=act.MoveTabRelative(-1) },
+  { key='>', mods='LEADER|SHIFT', action=act.MoveTabRelative(1)  },
+
+  -- ── COMMAND PALETTE ────────────────────────────────────────
+  { key=':', mods='LEADER|SHIFT', action=act.ActivateCommandPalette },
+
+  -- ── PANE BREAK-OUT (promote pane to own tab, like tmux break-pane) ─
+  { key='!', mods='LEADER|SHIFT', action=wezterm.action_callback(function(_, pane)
+      pane:move_to_new_tab()
+  end)},
 
   -- ── TABS (like tmux windows) ────────────────────────────────
   { key='c', mods='LEADER', action=act.SpawnTab 'CurrentPaneDomain' },
@@ -774,6 +888,64 @@ config.keys = {
         end
       end),
   }},
+
+  -- ── ALT+1–9 WORKSPACE SWITCHING (sorted alphabetically) ─────
+  { key='1', mods='ALT', action=wezterm.action_callback(function() local n = mux.get_workspace_names(); if n then table.sort(n) end; if n and n[1] then mux.set_active_workspace(n[1]) end end)},
+  { key='2', mods='ALT', action=wezterm.action_callback(function() local n = mux.get_workspace_names(); if n then table.sort(n) end; if n and n[2] then mux.set_active_workspace(n[2]) end end)},
+  { key='3', mods='ALT', action=wezterm.action_callback(function() local n = mux.get_workspace_names(); if n then table.sort(n) end; if n and n[3] then mux.set_active_workspace(n[3]) end end)},
+  { key='4', mods='ALT', action=wezterm.action_callback(function() local n = mux.get_workspace_names(); if n then table.sort(n) end; if n and n[4] then mux.set_active_workspace(n[4]) end end)},
+  { key='5', mods='ALT', action=wezterm.action_callback(function() local n = mux.get_workspace_names(); if n then table.sort(n) end; if n and n[5] then mux.set_active_workspace(n[5]) end end)},
+  { key='6', mods='ALT', action=wezterm.action_callback(function() local n = mux.get_workspace_names(); if n then table.sort(n) end; if n and n[6] then mux.set_active_workspace(n[6]) end end)},
+  { key='7', mods='ALT', action=wezterm.action_callback(function() local n = mux.get_workspace_names(); if n then table.sort(n) end; if n and n[7] then mux.set_active_workspace(n[7]) end end)},
+  { key='8', mods='ALT', action=wezterm.action_callback(function() local n = mux.get_workspace_names(); if n then table.sort(n) end; if n and n[8] then mux.set_active_workspace(n[8]) end end)},
+  { key='9', mods='ALT', action=wezterm.action_callback(function() local n = mux.get_workspace_names(); if n then table.sort(n) end; if n and #n > 0 then mux.set_active_workspace(n[#n]) end end)},
+
+  -- ── THEME TOGGLE (NeonDark ↔ NeonLight) ────────────────────
+  { key='T', mods='LEADER|SHIFT', action=wezterm.action_callback(function(window, _)
+      local overrides = window:get_config_overrides() or {}
+      local cur = overrides.color_scheme or 'NeonDark'
+      local next_theme = cur == 'NeonDark' and 'NeonLight' or 'NeonDark'
+      overrides.color_scheme = next_theme
+      if next_theme == 'NeonLight' then
+        overrides.window_frame = {
+          font      = wezterm.font { family = 'FiraCode Nerd Font', weight = 'Bold' },
+          font_size = 11.0,
+          active_titlebar_bg            = '#e8e8f0',
+          inactive_titlebar_bg          = '#d8d8e4',
+          active_titlebar_fg            = '#0077aa',
+          inactive_titlebar_fg          = '#555577',
+          active_titlebar_border_bottom = '#0077aa',
+          inactive_titlebar_border_bottom = '#d8d8e4',
+          button_fg       = '#0077aa',
+          button_bg       = '#e8e8f0',
+          button_hover_fg = '#f5f5fa',
+          button_hover_bg = '#0077aa',
+        }
+      else
+        overrides.window_frame = nil
+      end
+      window:set_config_overrides(overrides)
+      current_theme = next_theme
+      pcall(function()
+        window:toast_notification('WezTerm', 'Theme: ' .. next_theme, nil, 2000)
+      end)
+  end)},
+
+  -- ── READ-ONLY PANE TOGGLE ──────────────────────────────────
+  { key='R', mods='LEADER', action=wezterm.action_callback(function(window, pane)
+      local pid = pane:pane_id()
+      if readonly_panes[pid] then
+        readonly_panes[pid] = nil
+        pcall(function()
+          window:toast_notification('WezTerm', 'Pane ' .. pid .. ': read-only OFF', nil, 2000)
+        end)
+      else
+        readonly_panes[pid] = true
+        pcall(function()
+          window:toast_notification('WezTerm', 'Pane ' .. pid .. ': READ-ONLY (visual indicator only)', nil, 2000)
+        end)
+      end
+  end)},
 
   -- ── SESSION SAVE / RESTORE  (tmux-resurrect style) ─────────
   -- LEADER + Ctrl+S  →  save all workspaces to last.json
@@ -1023,10 +1195,20 @@ config.key_tables = {
     { key='w',        mods='NONE', action=act.CopyMode 'MoveForwardWord'       },
     { key='b',        mods='NONE', action=act.CopyMode 'MoveBackwardWord'      },
     { key='e',        mods='NONE', action=act.CopyMode 'MoveForwardWordEnd'    },
-    { key='0',        mods='NONE', action=act.CopyMode 'MoveToStartOfLine'     },
-    { key='$',        mods='NONE', action=act.CopyMode 'MoveToEndOfLineContent'},
-    { key='g',        mods='NONE', action=act.CopyMode 'MoveToScrollbackTop'   },
-    { key='G',        mods='NONE', action=act.CopyMode 'MoveToScrollbackBottom'},
+    { key='0',        mods='NONE', action=act.CopyMode 'MoveToStartOfLine'              },
+    { key='^',        mods='SHIFT',action=act.CopyMode 'MoveToStartOfLineContent'      },
+    { key='$',        mods='NONE', action=act.CopyMode 'MoveToEndOfLineContent'        },
+    { key='H',        mods='NONE', action=act.CopyMode 'MoveToViewportTop'             },
+    { key='M',        mods='NONE', action=act.CopyMode 'MoveToViewportMiddle'          },
+    { key='L',        mods='NONE', action=act.CopyMode 'MoveToViewportBottom'          },
+    { key='f',        mods='NONE', action=act.CopyMode { JumpForward  = { prev_char = false } } },
+    { key='F',        mods='NONE', action=act.CopyMode { JumpBackward = { prev_char = false } } },
+    { key='t',        mods='NONE', action=act.CopyMode { JumpForward  = { prev_char = true  } } },
+    { key='T',        mods='NONE', action=act.CopyMode { JumpBackward = { prev_char = true  } } },
+    { key=';',        mods='NONE', action=act.CopyMode 'JumpAgain'                     },
+    { key=',',        mods='NONE', action=act.CopyMode 'JumpReverse'                   },
+    { key='g',        mods='NONE', action=act.CopyMode 'MoveToScrollbackTop'           },
+    { key='G',        mods='NONE', action=act.CopyMode 'MoveToScrollbackBottom'        },
     { key='v',        mods='NONE', action=act.CopyMode { SetSelectionMode='Cell'  } },
     { key='V',        mods='NONE', action=act.CopyMode { SetSelectionMode='Line'  } },
     { key='v',        mods='CTRL', action=act.CopyMode { SetSelectionMode='Block' } },
@@ -1052,9 +1234,8 @@ config.key_tables = {
 }
 
 -- ============================================================
--- STATUS BAR  (leader | zoom | saved | workspace | panes | process | git | battery | clock)
--- Enhancement 2: zoom indicator
--- Enhancement 5: git branch
+-- STATUS BAR — LEFT: workspace, mode indicators, pane count
+--              RIGHT: process, git, battery, clock
 -- ============================================================
 wezterm.on('update-status', function(window, pane)
   -- Smart scrollbar: hide in alternate screen (vim, htop, etc.), reclaim right padding
@@ -1064,16 +1245,24 @@ wezterm.on('update-status', function(window, pane)
     overrides.enable_scroll_bar = false
     overrides.window_padding    = { left = 6, right = 6, top = 4, bottom = 0 }
   else
-    overrides.enable_scroll_bar = nil  -- fall back to config default (true)
-    overrides.window_padding    = nil  -- fall back to config default
+    overrides.enable_scroll_bar = nil
+    overrides.window_padding    = nil
   end
   window:set_config_overrides(overrides)
 
-  local parts = {}
+  -- ── LEFT STATUS: workspace + mode indicators + pane count ──
+  local left = {}
 
-  -- Leader active indicator
+  local ws = mux.get_active_workspace()
+  left[#left+1] = wezterm.format {
+    { Background = { Color = neon.cyan  } },
+    { Foreground = { Color = neon.black } },
+    { Attribute  = { Intensity = 'Bold' } },
+    { Text = '  ' .. ws .. ' ' },
+  }
+
   if window:leader_is_active() then
-    parts[#parts+1] = wezterm.format {
+    left[#left+1] = wezterm.format {
       { Background = { Color = neon.magenta } },
       { Foreground = { Color = neon.black   } },
       { Attribute  = { Intensity = 'Bold'   } },
@@ -1081,12 +1270,11 @@ wezterm.on('update-status', function(window, pane)
     }
   end
 
-  -- Enhancement 2: Zoom indicator (visible when a pane is zoomed)
   local ok_pi, panes_info = pcall(function() return window:active_tab():panes_with_info() end)
   if ok_pi and panes_info then
     for _, pinfo in ipairs(panes_info) do
       if pinfo.is_active and pinfo.is_zoomed then
-        parts[#parts+1] = wezterm.format {
+        left[#left+1] = wezterm.format {
           { Background = { Color = neon.yellow } },
           { Foreground = { Color = neon.black  } },
           { Attribute  = { Intensity = 'Bold'  } },
@@ -1097,9 +1285,17 @@ wezterm.on('update-status', function(window, pane)
     end
   end
 
-  -- Session saved indicator (visible for 30 s after save)
+  if readonly_panes[pane:pane_id()] then
+    left[#left+1] = wezterm.format {
+      { Background = { Color = neon.red   } },
+      { Foreground = { Color = neon.black } },
+      { Attribute  = { Intensity = 'Bold' } },
+      { Text = '  RO  ' },
+    }
+  end
+
   if last_save_time and (os.time() - last_save_time) < 30 then
-    parts[#parts+1] = wezterm.format {
+    left[#left+1] = wezterm.format {
       { Background = { Color = neon.green } },
       { Foreground = { Color = neon.black } },
       { Attribute  = { Intensity = 'Bold' } },
@@ -1107,21 +1303,11 @@ wezterm.on('update-status', function(window, pane)
     }
   end
 
-  -- Workspace
-  local ws = mux.get_active_workspace()
-  parts[#parts+1] = wezterm.format {
-    { Background = { Color = neon.cyan  } },
-    { Foreground = { Color = neon.black } },
-    { Attribute  = { Intensity = 'Bold' } },
-    { Text = '  ' .. ws .. ' ' },
-  }
-
-  -- Pane count for active tab
   local ok_tab, active_tab = pcall(function() return window:active_tab() end)
   if ok_tab and active_tab then
     local ok_panes, tab_panes = pcall(function() return active_tab:panes() end)
     if ok_panes and tab_panes and #tab_panes > 0 then
-      parts[#parts+1] = wezterm.format {
+      left[#left+1] = wezterm.format {
         { Background = { Color = neon.bg_panel } },
         { Foreground = { Color = neon.yellow   } },
         { Text = '  ' .. #tab_panes .. 'p ' },
@@ -1129,26 +1315,29 @@ wezterm.on('update-status', function(window, pane)
     end
   end
 
-  -- Active process
+  window:set_left_status(table.concat(left))
+
+  -- ── RIGHT STATUS: process, git, battery, clock ─────────────
+  local right = {}
+
   local ok_proc, proc = pcall(function() return pane:get_foreground_process_name() end)
   if not ok_proc then proc = '' end
   proc = proc or ''
   if proc ~= '' then
     proc = proc:match('([^/\\]+)$') or proc
-    parts[#parts+1] = wezterm.format {
+    right[#right+1] = wezterm.format {
       { Background = { Color = neon.bg_panel } },
       { Foreground = { Color = neon.purple   } },
       { Text = '  ' .. proc .. ' ' },
     }
   end
 
-  -- Enhancement 5: Git branch (cached 30 s per cwd)
   local ok_cwd, cwd_obj = pcall(function() return pane:get_current_working_dir() end)
   if ok_cwd and cwd_obj then
     local cwd_path = normalize_cwd(cwd_obj)
     local branch   = get_git_branch(cwd_path)
     if branch then
-      parts[#parts+1] = wezterm.format {
+      right[#right+1] = wezterm.format {
         { Background = { Color = neon.bg_panel } },
         { Foreground = { Color = neon.yellow   } },
         { Text = '   ' .. branch .. ' ' },
@@ -1156,7 +1345,6 @@ wezterm.on('update-status', function(window, pane)
     end
   end
 
-  -- Battery
   local ok, bats = pcall(wezterm.battery_info)
   if ok and bats and #bats > 0 then
     for _, b in ipairs(bats) do
@@ -1165,7 +1353,7 @@ wezterm.on('update-status', function(window, pane)
       local icon = b.state == 'Charging'
                  and wezterm.nerdfonts.md_battery_charging
                  or  wezterm.nerdfonts.md_battery_high
-      parts[#parts+1] = wezterm.format {
+      right[#right+1] = wezterm.format {
         { Background = { Color = neon.bg_alt } },
         { Foreground = { Color = col         } },
         { Text = ' ' .. icon .. pct .. '% ' },
@@ -1173,14 +1361,13 @@ wezterm.on('update-status', function(window, pane)
     end
   end
 
-  -- Clock
-  parts[#parts+1] = wezterm.format {
+  right[#right+1] = wezterm.format {
     { Background = { Color = neon.bg_alt } },
     { Foreground = { Color = neon.fg_dim } },
     { Text = '  ' .. wezterm.strftime '%a %d %b  %H:%M ' },
   }
 
-  window:set_right_status(table.concat(parts))
+  window:set_right_status(table.concat(right))
 end)
 
 -- ============================================================
@@ -1210,7 +1397,22 @@ wezterm.on('format-tab-title', function(tab, _, _, _, _, max_width)
 end)
 
 -- ============================================================
--- CONFIG RELOAD TOAST  (Enhancement 4)
+-- BELL NOTIFICATION — toast when a bell rings in an unfocused pane
+-- To trigger on command completion, add to your PowerShell profile:
+--   function prompt { [char]7 + "PS $($PWD.Path)> " }
+-- ============================================================
+wezterm.on('bell', function(window, pane)
+  local active_pane = window:active_pane()
+  if active_pane and active_pane:pane_id() ~= pane:pane_id() then
+    local title = pane:get_title() or 'pane'
+    pcall(function()
+      window:toast_notification('WezTerm', 'Bell in: ' .. title, nil, 4000)
+    end)
+  end
+end)
+
+-- ============================================================
+-- CONFIG RELOAD TOAST
 -- ============================================================
 wezterm.on('window-config-reloaded', function(window, _)
   pcall(function()
@@ -1266,28 +1468,41 @@ wezterm.on('mux-startup', function()
     end
   end
 
-  -- Create a minimal workspace immediately so the mux handshake
-  -- can complete without waiting for session restore / process spawns.
+  -- Check if a meaningful saved session exists (>1 pane) before spawning
+  local has_session = false
+  local sf = io.open(SESSION_FILE, 'r')
+  if sf then
+    local content = sf:read('*a')
+    sf:close()
+    local session = json_decode(content)
+    if session and session.workspaces then
+      local total_panes = 0
+      for _, ws in ipairs(session.workspaces) do
+        for _, win in ipairs(ws.windows or {}) do
+          for _, t in ipairs(win.tabs or {}) do
+            total_panes = total_panes + #(t.panes or {})
+          end
+        end
+      end
+      has_session = total_panes > 1
+    end
+  end
+
   local tab, left, _ = mux.spawn_window { workspace = 'main', args = shell }
   tab:set_title('Work')
   mux.set_active_workspace('main')
 
-  -- Defer the heavier work (session restore, pane splits) so the
-  -- GUI client does not time out parsing the initial server response.
-  wezterm.time.call_after(2, function()
-    local restored = do_restore_session(shell)
-
-    if restored then
-      -- Session restore created proper workspaces; close the temp pane
-      -- only if we now have a non-'main' workspace, or if restore rebuilt 'main'.
-      -- The restore already set the active workspace.
-    else
-      -- No save file — add the second pane to make the default 2-pane layout
-      pcall(function() left:split { direction = 'Right', size = 0.5, args = shell } end)
-    end
-
+  if has_session then
+    -- Defer heavy session restore so the GUI client doesn't time out
+    wezterm.time.call_after(2, function()
+      do_restore_session(shell)
+      start_autosave()
+    end)
+  else
+    -- No meaningful session — create default 2-pane layout immediately
+    left:split { direction = 'Right', size = 0.5, args = shell }
     start_autosave()
-  end)
+  end
 end)
 
 -- ============================================================

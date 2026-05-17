@@ -105,6 +105,13 @@ tmux requires WSL or Cygwin on Windows — it is a Linux tool bolted onto Window
 | Zoom indicator in status bar | No | **Yes** |
 | Git branch in status bar | No | **Yes** |
 | Scrollbar with smart auto-hide | No | **Yes** |
+| Dark/Light theme toggle | No | **Yes** |
+| Command palette | No | **Yes** |
+| Bell notification for background panes | No | **Yes** |
+| Session auto-pruning | No | **Yes** |
+| Alt+Arrow instant pane navigation | No | **Yes** |
+| Tab reordering | No | **Yes** |
+| Break pane out to new tab | No | **Yes** |
 
 ---
 
@@ -129,7 +136,7 @@ This config implements the same session persistence policy as the popular tmux p
 **Save files:** `%USERPROFILE%\.wezterm_sessions\`
 - `last.json` — most recent auto/manual save
 - `prev.json` — backup of previous save (one rollback slot)
-- `<name>.json` — named sessions (unlimited slots)
+- `<name>.json` — named sessions (auto-pruned to 20 most recent)
 
 ### Named Sessions
 
@@ -161,13 +168,23 @@ LEADER + Ctrl+R:
 
 ### Status bar indicators
 
+The status bar is split into two sides:
+
+**Left status** — workspace and mode indicators:
+
 | Badge | Colour | Meaning |
 |-------|--------|---------|
+| Workspace name | Cyan | Current workspace |
 | `WAIT` | Magenta | Leader key is active |
 | `ZOOM` | Yellow | A pane is zoomed fullscreen |
+| `RO` | Red | Pane is marked read-only |
 | `SAVED` | Green | Session was saved (shows for 30 s) |
-| Workspace name | Cyan | Current workspace |
 | `Np` | Yellow | Number of panes in active tab |
+
+**Right status** — contextual information:
+
+| Badge | Colour | Meaning |
+|-------|--------|---------|
 | Process name | Purple | Foreground process |
 | Branch name | Yellow | Git branch of active pane's CWD |
 | Battery | Green/Red | Battery level |
@@ -183,15 +200,19 @@ The leader key is **CTRL+B** — same as the tmux default.
 
 | Keybinding | Action |
 |-----------|--------|
-| `LEADER + \|` or `%` | Split pane right (vertical divider) |
-| `LEADER + -` or `"` | Split pane down (horizontal divider) |
-| `LEADER + h/j/k/l` | Navigate panes (vim-style) |
-| `LEADER + Arrow keys` | Navigate panes |
+| `LEADER + \|` or `%` | Split pane right (inherits cwd) |
+| `LEADER + -` or `"` | Split pane down (inherits cwd) |
+| `ALT + h/j/k/l` | **Navigate panes instantly (no leader)** |
+| `ALT + Arrow keys` | **Navigate panes instantly (no leader)** |
+| `LEADER + h/j/k/l` | Navigate panes (vim-style, with leader) |
+| `LEADER + Arrow keys` | Navigate panes (with leader) |
 | `LEADER + H/J/K/L` | Resize pane by 5 cells |
 | `LEADER + z` | Zoom pane fullscreen toggle |
 | `LEADER + x` | Close current pane |
+| `LEADER + !` | **Break pane out to new tab** |
 | `LEADER + o` | Visual pane picker |
 | `LEADER + { / }` | Rotate panes |
+| `LEADER + R` | **Toggle read-only indicator** |
 
 ### Layouts
 
@@ -216,6 +237,7 @@ Useful with the 7-pane agent layout: run the same setup command across all agent
 | `LEADER + c` | New tab |
 | `LEADER + n / p` | Next / previous tab |
 | `LEADER + 1–9` | Switch to tab by number |
+| `LEADER + < / >` | **Reorder tab left / right** |
 | `LEADER + ,` | Rename tab |
 | `LEADER + &` | Close tab |
 
@@ -227,6 +249,7 @@ Useful with the 7-pane agent layout: run the same setup command across all agent
 | `LEADER + s` | Full launcher (workspaces + tabs + apps) |
 | `LEADER + W` | Create new named workspace |
 | `LEADER + $` | Rename current workspace |
+| `ALT + 1–9` | **Switch to workspace by index (sorted A-Z)** |
 | `LEADER + D` | Connect to SSH domain |
 | `LEADER + d` | **Quit WezTerm** — closes the application (save session first with LEADER+Ctrl+S) |
 
@@ -249,7 +272,12 @@ Enter with `LEADER + [`, exit with `q` or `Esc`.
 |-----|--------|
 | `h/j/k/l` | Move cursor |
 | `w / b / e` | Word forward / backward / end |
-| `0 / $` | Start / end of line |
+| `0 / ^` | Start of line / first non-blank |
+| `$` | End of line |
+| `H / M / L` | **Viewport top / middle / bottom** |
+| `f / F` | **Jump forward / backward to char** |
+| `t / T` | **Jump forward / backward till char** |
+| `; / ,` | **Repeat / reverse last jump** |
 | `g / G` | Top / bottom of scrollback |
 | `v` | Character selection |
 | `V` | Line selection |
@@ -269,6 +297,8 @@ Enter with `LEADER + [`, exit with `q` or `Esc`.
 | `CTRL+click` | Open URL under cursor |
 | `CTRL+=` / `CTRL+-` | Increase / decrease font size |
 | `CTRL+0` | Reset font size |
+| `LEADER + :` | **Command palette** (search all actions) |
+| `LEADER + Shift+T` | **Toggle NeonDark ↔ NeonLight theme** |
 | `LEADER + r` | Reload config without restart |
 | `LEADER + e` | Open current selection (or viewport) in `$EDITOR` |
 | `LEADER + f` | Search scrollback buffer |
@@ -357,7 +387,18 @@ Every time a save runs (manual or auto), the previous `last.json` is renamed to 
 
 **Q: How do named sessions differ from the main save slot?**
 
-Named sessions (`LEADER + Ctrl+N`) write to a separate `<name>.json` file and never overwrite `last.json` or `prev.json`. They persist indefinitely until you delete them with `LEADER + Ctrl+D`. Use them for project-specific layouts you want to keep permanently.
+Named sessions (`LEADER + Ctrl+N`) write to a separate `<name>.json` file and never overwrite `last.json` or `prev.json`. They are auto-pruned to the 20 most recent when a new named session is saved. Use them for project-specific layouts you want to keep.
+
+**Q: How do I get notifications when a background command finishes?**
+
+Add a bell character to your PowerShell prompt so it rings when each command completes:
+
+```powershell
+# Add to your PowerShell profile:
+function prompt { [char]7 + "PS $($PWD.Path)> " }
+```
+
+WezTerm will show a toast notification whenever a bell rings in an unfocused pane.
 
 **Q: I closed WezTerm and my terminal output is gone. Can I get it back?**
 
@@ -384,7 +425,11 @@ WezTerm also auto-reads `~/.ssh/config` — no extra setup for hosts already def
 
 ---
 
-## Theme: Neon Dark
+## Themes: Neon Dark & Neon Light
+
+Toggle between themes with **LEADER + Shift+T**. A toast notification confirms the switch.
+
+### Neon Dark (default)
 
 | Element | Value |
 |---------|-------|
@@ -395,7 +440,21 @@ WezTerm also auto-reads `~/.ssh/config` — no extra setup for hosts already def
 | Green | `#00ff88` (session saved badge) |
 | Yellow | `#ffe566` (pane count, git branch, zoom badge) |
 | Cursor | Blinking cyan bar |
-| Scrollbar | Cyan thumb (`#00ffe1`), auto-hides in alternate screen (vim/htop) |
+
+### Neon Light
+
+| Element | Value |
+|---------|-------|
+| Background | `#f5f5fa` (soft lavender white) |
+| Foreground | `#1a1a2e` (dark navy) |
+| Accent | `#0077aa` (deep blue — splits, active tab) |
+| Cursor | Blinking blue bar |
+
+### Common settings
+
+| Element | Value |
+|---------|-------|
+| Scrollbar | Auto-hides in alternate screen (vim/htop) |
 | Backdrop | Solid (backdrop blur disabled for input latency) |
 | Font | FiraCode Nerd Font Medium 14px |
 | Ligatures | calt, clig, liga, ss01, ss03, ss05 |
