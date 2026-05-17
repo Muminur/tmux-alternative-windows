@@ -16,23 +16,30 @@
 --  Layouts   : LEADER+A        = 7-pane agent grid
 --              LEADER+Shift+2  = 2-pane side-by-side
 --              LEADER+Shift+3  = 3-pane code layout
+--              LEADER+Shift+4  = 4-pane 2x2 grid
+--              LEADER+Shift+5  = main + sidebar (70/30, sidebar stacked)
 --  Navigation: ALT+h/j/k/l or ALT+Arrows = pane nav (no leader)
 --              ALT+1–9        = workspace switch by index
+--              ALT+[  / ALT+] = pane history back / forward (20-entry stack)
 --  Tabs      : LEADER+< / >   = reorder tabs
 --              LEADER+!       = break pane out to new tab
---              Tab title shows CWD basename when shell is active
+--              Tab title shows git repo root (or CWD basename) when shell is active
 --  Modes     : LEADER+:       = command palette
 --              LEADER+R       = toggle read-only pane indicator
 --              LEADER+Ctrl+H  = enter resize mode (h/j/k/l, ESC to exit)
+--              LEADER+Shift+O = opacity toggle (solid ↔ acrylic transparent)
 --  Workspace : LEADER+B       = toggle last workspace (like tmux L)
 --              LEADER+P       = project launcher (fuzzy-pick from dirs)
---              Status bar shows workspace index [N/M]
+--              LEADER+Shift+S = dynamic SSH host picker (from ~/.ssh/config)
+--              Status bar shows workspace index [N/M], accent color per workspace
 --  Copy mode : full vim motions (^, H/M/L, f/F/t/T, ;/,)
---  Broadcast : LEADER+Ctrl+X  = send text to all panes
+--  Broadcast : LEADER+Ctrl+X  = one-shot send text to all panes
+--              LEADER+Ctrl+Y  = toggle sync mode (continuous, SYNC badge in status bar)
 --  Bell      : toast notification for bells in unfocused panes
 --  Notify    : toast when long-running cmd (>15s) completes in bg pane
---  Status    : LEFT:  workspace [N/M], WAIT, ZOOM, RESIZE, RO, SAVED, pane count
---              RIGHT: process, git branch, battery, clock
+--  Status    : LEFT:  workspace [N/M] (accent color per workspace), WAIT, ZOOM, RESIZE, SYNC, RO,
+--                      SAVED (green), ⏱Nm (orange, 5-15 min), STALE (red, >15 min), pane count
+--              RIGHT: process, git branch + ✓ (clean) / ● (dirty), battery, clock
 -- ============================================================
 
 local wezterm = require 'wezterm'
@@ -43,10 +50,18 @@ local config  = wezterm.config_builder()
 
 -- Per-window state (keyed by window_id)
 local sync_windows  = {}  -- reserved for future sync-mode extensions
-local git_branch_cache = {} -- cwd -> { branch, expires }
+local sync_mode     = {}  -- window_id -> true when sync mode is active
+local git_branch_cache = {} -- cwd -> { branch, dirty, repo_root, expires }
 local readonly_panes = {} -- pane_id -> true for read-only panes
 local current_theme = 'NeonDark' -- toggles between NeonDark / NeonLight
 local prev_workspace = nil -- Enhancement: last-workspace toggle
+local last_known_workspace = nil  -- for prev_workspace tracking
+
+-- Pane history navigation state
+local pane_history     = {}      -- stack of pane_ids
+local pane_history_pos = 0       -- current position in stack
+local MAX_PANE_HISTORY = 20
+local last_tracked_pane = nil    -- to detect changes
 
 -- ============================================================
 -- NEON DARK COLOR SCHEME
@@ -69,6 +84,21 @@ local neon = {
   white       = '#e0e0ff',
   black       = '#0a0a14',
 }
+
+-- ── Per-Workspace Accent Colors (Enhancement 7) ─────────────────
+local workspace_accents = {
+  neon.cyan, neon.magenta, neon.green, neon.yellow,
+  neon.orange, neon.purple, neon.blue, neon.red,
+}
+
+local function workspace_accent(name)
+  if not name or #name == 0 then return neon.cyan end
+  local hash = 0
+  for i = 1, #name do
+    hash = (hash * 31 + string.byte(name, i)) % 256
+  end
+  return workspace_accents[(hash % #workspace_accents) + 1]
+end
 
 config.color_schemes = {
   ['NeonDark'] = {
@@ -285,6 +315,7 @@ config.quick_select_patterns = {
   '[0-9a-f]{7,40}',
   '\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}(?::\\d+)?',
   '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
+  '[0-9a-f]{12}',
   '\\bAgent-[0-9]+\\b',
 }
 
@@ -726,31 +757,60 @@ local function start_autosave()
 end
 
 -- ============================================================
--- GIT BRANCH HELPER  (Enhancement 5)
+-- GIT INFO HELPER  (Enhancement 2 / 5 / 8)
 -- Cached for 30 seconds per directory to avoid spawning git
 -- on every status-bar repaint (~1 s interval).
+-- Returns {branch, dirty, repo_root} table (branch may be nil for non-git dirs).
+-- Negative results (non-repo) are also cached so we don't re-spawn on every repaint.
 -- ============================================================
-local function get_git_branch(cwd)
-  if not cwd or #cwd == 0 then return nil end
+local function get_git_info(cwd)
+  if not cwd or #cwd == 0 then return { branch = nil, dirty = false, repo_root = nil } end
   local now    = os.time()
   local cached = git_branch_cache[cwd]
-  if cached and cached.expires > now then return cached.branch end
+  if cached and cached.expires > now then return cached end
 
-  local ok, success, stdout = pcall(wezterm.run_child_process, {
-    'git', '-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD',
-  })
-  local branch = nil
-  if ok and success and stdout then
-    local b = stdout:gsub('%s+$', '')
-    if #b > 0 and b ~= 'HEAD' then branch = b end
-  end
-
+  -- Evict cache if it grows too large
   local cache_size = 0
   for _ in pairs(git_branch_cache) do cache_size = cache_size + 1 end
   if cache_size > 200 then git_branch_cache = {} end
 
-  git_branch_cache[cwd] = { branch = branch, expires = now + 30 }
-  return branch
+  -- Step 1: get branch name
+  local branch = nil
+  local ok1, success1, stdout1 = pcall(wezterm.run_child_process, {
+    'git', '-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD',
+  })
+  if ok1 and success1 and stdout1 then
+    local b = stdout1:gsub('%s+$', '')
+    if #b > 0 and b ~= 'HEAD' then branch = b end
+  end
+
+  local dirty     = false
+  local repo_root = nil
+
+  if branch then
+    -- Step 2: dirty status (only run when we know we're in a git repo)
+    local ok2, success2, stdout2 = pcall(wezterm.run_child_process, {
+      'git', '-C', cwd, 'status', '--porcelain',
+    })
+    if ok2 and success2 and stdout2 then
+      dirty = (#stdout2:gsub('%s+$', '') > 0)
+    end
+
+    -- Step 3: repo root basename (for smart tab titles — Enhancement 8)
+    local ok3, success3, stdout3 = pcall(wezterm.run_child_process, {
+      'git', '-C', cwd, 'rev-parse', '--show-toplevel',
+    })
+    if ok3 and success3 and stdout3 then
+      local root = stdout3:gsub('%s+$', '')
+      -- Normalize: git outputs Unix-style /C:/... paths on Windows
+      root = root:gsub('^/([A-Za-z]:)', '%1')
+      if #root > 0 then repo_root = root end
+    end
+  end
+
+  local info = { branch = branch, dirty = dirty, repo_root = repo_root, expires = now + 30 }
+  git_branch_cache[cwd] = info
+  return info
 end
 
 -- ============================================================
@@ -791,6 +851,19 @@ local function spawn_agent_layout(root_pane)
   end
 end
 
+-- 4-pane grid (2x2) — LEADER+Shift+4
+local function spawn_layout_4grid(root_pane)
+  local right = root_pane:split { direction = 'Right', size = 0.5 }
+  root_pane:split { direction = 'Bottom', size = 0.5 }
+  right:split { direction = 'Bottom', size = 0.5 }
+end
+
+-- Main + sidebar (large left, narrow right with two stacked panes) — LEADER+Shift+5
+local function spawn_layout_main_sidebar(root_pane)
+  local side_top = root_pane:split { direction = 'Right', size = 0.30 }
+  side_top:split { direction = 'Bottom', size = 0.5 }
+end
+
 -- ============================================================
 -- PROJECT WORKSPACE LAUNCHER
 -- Scans known project roots, spawns workspace with 2-pane layout (editor + terminal)
@@ -818,6 +891,24 @@ local function scan_project_dirs()
     end
   end
   return projects
+end
+
+-- ============================================================
+-- SSH HOST PICKER  (parses ~/.ssh/config for Host entries)
+-- ============================================================
+local function parse_ssh_hosts()
+  local hosts = {}
+  local path  = wezterm.home_dir .. '/.ssh/config'
+  local f     = io.open(path, 'r')
+  if not f then return nil end
+  for line in f:lines() do
+    local host = line:match('^%s*[Hh]ost%s+(%S+)%s*$')
+    if host and not host:find('[%*%?]') and host:sub(1,1) ~= '-' then
+      hosts[#hosts+1] = host
+    end
+  end
+  f:close()
+  return hosts
 end
 
 -- ============================================================
@@ -875,7 +966,7 @@ config.keys = {
   { key='x', mods='LEADER', action=act.CloseCurrentPane { confirm=true } },
   { key='{', mods='LEADER|SHIFT', action=act.RotatePanes 'CounterClockwise' },
   { key='}', mods='LEADER|SHIFT', action=act.RotatePanes 'Clockwise' },
-  { key='o', mods='LEADER', action=act.PaneSelect },
+  { key='o', mods='LEADER', action=act.PaneSelect { alphabet = 'asdfghjkl' } },
   { key='q', mods='LEADER', action=act.PaneSelect { mode='SwapWithActiveKeepFocus' } },
 
   -- ── TAB REORDERING ──────────────────────────────────────────
@@ -966,7 +1057,7 @@ config.keys = {
         fuzzy   = true,
         action  = wezterm.action_callback(function(w, p, id, label)
           if id then
-            local name = label and label:match('^(%S+)') or id:match('([^/\\]+)$')
+            local name = id:match('([^/\\]+)$') or 'project'
             local shell = pwsh and { pwsh, '-NoLogo' } or { 'powershell.exe', '-NoLogo' }
             local tab, first_pane, new_win = mux.spawn_window {
               workspace = name, args = shell, cwd = id
@@ -1018,6 +1109,23 @@ config.keys = {
       current_theme = next_theme
       pcall(function()
         window:toast_notification('WezTerm', 'Theme: ' .. next_theme, nil, 2000)
+      end)
+  end)},
+
+  -- ── OPACITY TOGGLE (Solid ↔ Acrylic/Transparent) ───────────
+  { key='O', mods='LEADER|SHIFT', action=wezterm.action_callback(function(window, _)
+      local overrides = window:get_config_overrides() or {}
+      local current = overrides.window_background_opacity or 1.0
+      if current < 1.0 then
+        overrides.window_background_opacity = 1.0
+        overrides.win32_system_backdrop = 'Disable'
+      else
+        overrides.window_background_opacity = 0.85
+        overrides.win32_system_backdrop = 'Acrylic'
+      end
+      window:set_config_overrides(overrides)
+      pcall(function()
+        window:toast_notification('WezTerm', 'Opacity: ' .. (overrides.window_background_opacity == 1.0 and 'Solid' or 'Transparent'), nil, 2000)
       end)
   end)},
 
@@ -1186,6 +1294,48 @@ config.keys = {
       }, pane)
   end)},
 
+  -- ── SYNC MODE  (Enhancement 1) ───────────────────────────────
+  -- LEADER + Ctrl+Y  →  toggle sync mode: type in prompt, sent to ALL panes
+  { key='y', mods='LEADER|CTRL', action=wezterm.action_callback(function(window, pane)
+      local wid = window:window_id()
+      if sync_mode[wid] then
+        sync_mode[wid] = nil
+        pcall(function()
+          window:toast_notification('WezTerm', 'Sync mode OFF', nil, 2000)
+        end)
+      else
+        sync_mode[wid] = true
+        pcall(function()
+          window:toast_notification('WezTerm', 'Sync mode ON — type in prompt, sent to all panes. LEADER+Ctrl+Y to stop.', nil, 3000)
+        end)
+        local function sync_loop(w, p)
+          if not sync_mode[w:window_id()] then return end
+          w:perform_action(act.PromptInputLine {
+            description = 'SYNC> (Enter to send, empty to exit):',
+            action = wezterm.action_callback(function(w2, _, line)
+              if not line or #line == 0 then
+                sync_mode[w2:window_id()] = nil
+                pcall(function()
+                  w2:toast_notification('WezTerm', 'Sync mode OFF', nil, 2000)
+                end)
+                return
+              end
+              local tab = w2:active_tab()
+              local panes = tab:panes()
+              for _, tp in ipairs(panes) do
+                tp:send_text(line .. '\r')
+              end
+              -- Re-open prompt for next command
+              wezterm.time.call_after(0.1, function()
+                sync_loop(w2, p)
+              end)
+            end),
+          }, p)
+        end
+        sync_loop(window, pane)
+      end
+  end)},
+
   -- ── DETACH  (tmux LEADER+d) ─────────────────────────────────
   { key='d', mods='LEADER', action=act.QuitApplication },
 
@@ -1246,6 +1396,38 @@ config.keys = {
   -- ── SSH / DOMAINS ────────────────────────────────────────────
   { key='D', mods='LEADER', action=act.ShowLauncherArgs { flags='FUZZY|DOMAINS' } },
 
+  -- ── SSH HOST PICKER (dynamic, from ~/.ssh/config) ─────────
+  -- LEADER + Shift+S   →  fuzzy-pick SSH host and connect in new pane
+  { key='S', mods='LEADER|SHIFT', action=wezterm.action_callback(function(window, pane)
+      local hosts = parse_ssh_hosts()
+      if not hosts then
+        pcall(function()
+          window:toast_notification('WezTerm', 'No ~/.ssh/config found', nil, 3000)
+        end)
+        return
+      end
+      if #hosts == 0 then
+        pcall(function()
+          window:toast_notification('WezTerm', 'No Host entries in ~/.ssh/config', nil, 3000)
+        end)
+        return
+      end
+      local choices = {}
+      for _, h in ipairs(hosts) do
+        choices[#choices+1] = { id = h, label = h }
+      end
+      window:perform_action(act.InputSelector {
+        title   = 'SSH to Host',
+        choices = choices,
+        fuzzy   = true,
+        action  = wezterm.action_callback(function(_, p, id, _)
+          if id then
+            p:split { direction = 'Right', args = { 'ssh', '--', id } }
+          end
+        end),
+      }, pane)
+  end)},
+
   -- ── LAYOUTS  (Enhancement 6) ─────────────────────────────────
   -- LEADER + A         →  7-pane agent grid
   { key='A', mods='LEADER', action=wezterm.action_callback(function(_, pane)
@@ -1259,6 +1441,14 @@ config.keys = {
   { key='3', mods='LEADER|SHIFT', action=wezterm.action_callback(function(_, pane)
       spawn_layout_3pane(pane)
   end)},
+  -- LEADER + Shift+4   →  4-pane 2x2 grid
+  { key='4', mods='LEADER|SHIFT', action=wezterm.action_callback(function(_, pane)
+      spawn_layout_4grid(pane)
+  end)},
+  -- LEADER + Shift+5   →  main + sidebar (large left, narrow right stacked)
+  { key='5', mods='LEADER|SHIFT', action=wezterm.action_callback(function(_, pane)
+      spawn_layout_main_sidebar(pane)
+  end)},
 
   -- ── MISC ─────────────────────────────────────────────────────
   { key='r', mods='LEADER',     action=act.ReloadConfiguration },
@@ -1269,6 +1459,40 @@ config.keys = {
       act.ClearScrollback 'ScrollbackAndViewport',
       act.SendKey { key='l', mods='CTRL' },
   }},
+
+  -- ── PANE HISTORY NAV  (Enhancement 4) ────────────────────────
+  -- ALT+[  →  pane history back
+  { key='[', mods='ALT', action=wezterm.action_callback(function(window, _)
+      if pane_history_pos > 1 then
+        pane_history_pos = pane_history_pos - 1
+        local target_id = pane_history[pane_history_pos]
+        last_tracked_pane = target_id  -- prevent re-push
+        local tab = window:active_tab()
+        local panes = tab:panes_with_info()
+        for _, pinfo in ipairs(panes) do
+          if pinfo.pane:pane_id() == target_id then
+            pinfo.pane:activate()
+            break
+          end
+        end
+      end
+  end)},
+  -- ALT+]  →  pane history forward
+  { key=']', mods='ALT', action=wezterm.action_callback(function(window, _)
+      if pane_history_pos < #pane_history then
+        pane_history_pos = pane_history_pos + 1
+        local target_id = pane_history[pane_history_pos]
+        last_tracked_pane = target_id  -- prevent re-push
+        local tab = window:active_tab()
+        local panes = tab:panes_with_info()
+        for _, pinfo in ipairs(panes) do
+          if pinfo.pane:pane_id() == target_id then
+            pinfo.pane:activate()
+            break
+          end
+        end
+      end
+  end)},
 }
 
 -- ============================================================
@@ -1340,7 +1564,6 @@ config.key_tables = {
 -- STATUS BAR — LEFT: workspace, mode indicators, pane count
 --              RIGHT: process, git, battery, clock
 -- ============================================================
-local last_known_workspace = nil  -- for prev_workspace tracking
 
 wezterm.on('update-status', function(window, pane)
   -- Track workspace changes for last-workspace toggle
@@ -1349,6 +1572,25 @@ wezterm.on('update-status', function(window, pane)
     prev_workspace = last_known_workspace
   end
   last_known_workspace = current_ws
+
+  -- Track pane focus for history navigation (Enhancement 4)
+  local current_pane_id = pane:pane_id()
+  if current_pane_id ~= last_tracked_pane then
+    if last_tracked_pane ~= nil then
+      -- Trim forward history when navigating normally (not via back/forward)
+      if pane_history_pos < #pane_history then
+        for i = #pane_history, pane_history_pos + 1, -1 do
+          table.remove(pane_history, i)
+        end
+      end
+      pane_history[#pane_history + 1] = current_pane_id
+      if #pane_history > MAX_PANE_HISTORY then
+        table.remove(pane_history, 1)
+      end
+      pane_history_pos = #pane_history
+    end
+    last_tracked_pane = current_pane_id
+  end
 
   -- Smart scrollbar: hide in alternate screen (vim, htop, etc.), reclaim right padding
   local overrides = window:get_config_overrides() or {}
@@ -1375,7 +1617,7 @@ wezterm.on('update-status', function(window, pane)
     end
   end
   left[#left+1] = wezterm.format {
-    { Background = { Color = neon.cyan  } },
+    { Background = { Color = workspace_accent(ws) } },
     { Foreground = { Color = neon.black } },
     { Attribute  = { Intensity = 'Bold' } },
     { Text = '  ' .. ws .. ws_idx_str .. ' ' },
@@ -1415,6 +1657,15 @@ wezterm.on('update-status', function(window, pane)
     }
   end
 
+  if sync_mode[window:window_id()] then
+    left[#left+1] = wezterm.format {
+      { Background = { Color = neon.red    } },
+      { Foreground = { Color = neon.black  } },
+      { Attribute  = { Intensity = 'Bold'  } },
+      { Text = '  SYNC  ' },
+    }
+  end
+
   if readonly_panes[pane:pane_id()] then
     left[#left+1] = wezterm.format {
       { Background = { Color = neon.red   } },
@@ -1424,13 +1675,34 @@ wezterm.on('update-status', function(window, pane)
     }
   end
 
-  if last_save_time and (os.time() - last_save_time) < 30 then
-    left[#left+1] = wezterm.format {
-      { Background = { Color = neon.green } },
-      { Foreground = { Color = neon.black } },
-      { Attribute  = { Intensity = 'Bold' } },
-      { Text = '  SAVED  ' },
-    }
+  if last_save_time then
+    local age = os.time() - last_save_time
+    if age < 30 then
+      -- SAVED badge: shows for 30s immediately after a save
+      left[#left+1] = wezterm.format {
+        { Background = { Color = neon.green } },
+        { Foreground = { Color = neon.black } },
+        { Attribute  = { Intensity = 'Bold' } },
+        { Text = '  SAVED  ' },
+      }
+    elseif age > AUTOSAVE_SECS then
+      -- STALE badge: last save was more than 15 min ago
+      left[#left+1] = wezterm.format {
+        { Background = { Color = neon.red   } },
+        { Foreground = { Color = neon.black } },
+        { Attribute  = { Intensity = 'Bold' } },
+        { Text = '  STALE  ' },
+      }
+    elseif age > 300 then
+      -- Age badge: 5–15 min since last save, show elapsed minutes
+      local mins = math.floor(age / 60)
+      left[#left+1] = wezterm.format {
+        { Background = { Color = neon.orange } },
+        { Foreground = { Color = neon.black  } },
+        { Attribute  = { Intensity = 'Bold'  } },
+        { Text = '  ⏱ ' .. mins .. 'm  ' },
+      }
+    end
   end
 
   local ok_tab, active_tab = pcall(function() return window:active_tab() end)
@@ -1465,12 +1737,16 @@ wezterm.on('update-status', function(window, pane)
   local ok_cwd, cwd_obj = pcall(function() return pane:get_current_working_dir() end)
   if ok_cwd and cwd_obj then
     local cwd_path = normalize_cwd(cwd_obj)
-    local branch   = get_git_branch(cwd_path)
-    if branch then
+    local git_info = get_git_info(cwd_path)
+    if git_info.branch then
+      local dirty_fg   = git_info.dirty and neon.red   or neon.green
+      local dirty_icon = git_info.dirty and ' ●'       or ' ✓'
       right[#right+1] = wezterm.format {
         { Background = { Color = neon.bg_panel } },
         { Foreground = { Color = neon.yellow   } },
-        { Text = '   ' .. branch .. ' ' },
+        { Text = '   ' .. git_info.branch },
+        { Foreground = { Color = dirty_fg     } },
+        { Text = dirty_icon .. ' ' },
       }
     end
   end
@@ -1515,10 +1791,20 @@ wezterm.on('format-tab-title', function(tab, _, _, _, _, max_width)
   if SHELL_PROCS[proc_name:lower()] or proc_name == '' then
     local cwd = p.current_working_dir
     if cwd then
-      local path = (cwd.file_path or tostring(cwd)):gsub('^/([A-Za-z]:)', '%1')
-      local basename = path:match('([^/\\]+)[/\\]*$')
-      if basename and #basename > 0 then
-        title = basename
+      -- Normalize CWD the same way as the status bar (strips leading /X: and trailing slashes)
+      local cwd_path = normalize_cwd(cwd)
+      -- Try git repo root first; fall back to CWD basename
+      local git_info = get_git_info(cwd_path)
+      if git_info.repo_root then
+        local repo_name = git_info.repo_root:match('([^/\\]+)[/\\]*$')
+        if repo_name and #repo_name > 0 then
+          title = repo_name
+        end
+      else
+        local basename = cwd_path:match('([^/\\]+)[/\\]*$')
+        if basename and #basename > 0 then
+          title = basename
+        end
       end
     end
   end

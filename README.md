@@ -116,8 +116,14 @@ tmux requires WSL or Cygwin on Windows — it is a Linux tool bolted onto Window
 | Last-workspace toggle (like tmux L) | Yes | **Yes** |
 | Pane resize mode (continuous) | Yes | **Yes** |
 | Project workspace launcher | tmuxinator plugin | **Built-in** |
-| CWD-aware tab titles | No | **Yes** |
+| CWD-aware tab titles (git repo root when in a repo) | No | **Yes** |
 | Workspace index indicator [N/M] | No | **Yes** |
+| Synchronized pane input (all panes at once) | tmux synchronize-panes | **Built-in** |
+| Git dirty indicator in status bar (● / ✓) | No | **Yes** |
+| SSH host auto-discovery from ~/.ssh/config | No | **Yes** |
+| Pane focus history navigation (back/forward) | No | **Yes** |
+| Per-workspace accent colors | No | **Yes** |
+| Window opacity toggle (solid ↔ transparent) | No | **Yes** |
 
 ---
 
@@ -180,12 +186,15 @@ The status bar is split into two sides:
 
 | Badge | Colour | Meaning |
 |-------|--------|---------|
-| Workspace name `[N/M]` | Cyan | Current workspace + index/total |
+| Workspace name `[N/M]` | Accent (varies per workspace) | Current workspace + index/total; color is a hash of the workspace name |
 | `WAIT` | Magenta | Leader key is active |
 | `ZOOM` | Yellow | A pane is zoomed fullscreen |
 | `RESIZE` | Orange | Resize mode active (h/j/k/l to resize, ESC to exit) |
+| `SYNC` | Red | Sync input mode active — every prompt line is sent to all panes |
 | `RO` | Red | Pane is marked read-only |
 | `SAVED` | Green | Session was saved (shows for 30 s) |
+| `⏱ Nm` | Orange | Session age 5–15 min since last save |
+| `STALE` | Red | Session age >15 min since last save |
 | `Np` | Yellow | Number of panes in active tab |
 
 **Right status** — contextual information:
@@ -193,7 +202,7 @@ The status bar is split into two sides:
 | Badge | Colour | Meaning |
 |-------|--------|---------|
 | Process name | Purple | Foreground process |
-| Branch name | Yellow | Git branch of active pane's CWD |
+| Branch name + `✓`/`●` | Yellow + Green/Red | Git branch — green `✓` when clean, red `●` when dirty (uncommitted changes) |
 | Battery | Green/Red | Battery level |
 | Clock | Dim | Day, date, time |
 
@@ -218,7 +227,7 @@ The leader key is **CTRL+B** — same as the tmux default.
 | `LEADER + z` | Zoom pane fullscreen toggle |
 | `LEADER + x` | Close current pane |
 | `LEADER + !` | **Break pane out to new tab** |
-| `LEADER + o` | Visual pane picker |
+| `LEADER + o` | Visual pane picker with home-row letter labels (a/s/d/f/g/h/j/k/l) |
 | `LEADER + { / }` | Rotate panes |
 | `LEADER + R` | **Toggle read-only indicator** |
 
@@ -229,14 +238,19 @@ The leader key is **CTRL+B** — same as the tmux default.
 | `LEADER + A` | 7-pane agent grid | Multi-agent (Claude Code etc.) |
 | `LEADER + Shift+2` | 2-pane side-by-side | Code + Terminal |
 | `LEADER + Shift+3` | 3-pane code layout | Editor + Tests + Logs |
+| `LEADER + Shift+4` | 4-pane grid (2×2) | Quad parallel workflows |
+| `LEADER + Shift+5` | Main + sidebar (70/30) | Editor + stacked side panes |
 
 ### Broadcast
 
 | Keybinding | Action |
 |-----------|--------|
-| `LEADER + Ctrl+X` | Prompt for text and send it to **all panes** in the active tab |
+| `LEADER + Ctrl+X` | Prompt for text and send it to **all panes** in the active tab (one-shot) |
+| `LEADER + Ctrl+Y` | **Toggle sync input mode** — each line you type is sent to ALL panes continuously; empty line or `LEADER+Ctrl+Y` again exits |
 
 Useful with the 7-pane agent layout: run the same setup command across all agents simultaneously.
+
+**Sync mode vs. one-shot broadcast:** `LEADER+Ctrl+X` sends a single command. `LEADER+Ctrl+Y` enters a continuous loop — every prompt entry goes to all panes until you send an empty line. The status bar shows `SYNC` in red while sync mode is active. This is the tmux `synchronize-panes` equivalent.
 
 ### Tabs (equivalent to tmux windows)
 
@@ -261,6 +275,7 @@ Useful with the 7-pane agent layout: run the same setup command across all agent
 | `LEADER + P` | **Project launcher** — fuzzy-pick from project dirs, spawn workspace |
 | `ALT + 1–9` | **Switch to workspace by index (sorted A-Z)** |
 | `LEADER + D` | Connect to SSH domain |
+| `LEADER + Shift+S` | **Dynamic SSH host picker** — fuzzy-pick from `~/.ssh/config` Host entries; opens SSH in a split pane |
 | `LEADER + d` | **Quit WezTerm** — closes the application (save session first with LEADER+Ctrl+S) |
 
 ### Session Save & Restore (tmux-resurrect style)
@@ -309,16 +324,19 @@ Enter with `LEADER + [`, exit with `q` or `Esc`.
 | `CTRL+0` | Reset font size |
 | `LEADER + :` | **Command palette** (search all actions) |
 | `LEADER + Shift+T` | **Toggle NeonDark ↔ NeonLight theme** |
+| `LEADER + Shift+O` | **Toggle window opacity** — switch between solid (1.0) and transparent (0.85 + Acrylic blur) |
+| `ALT + [` | **Pane history back** — jump to previously focused pane (20-entry stack) |
+| `ALT + ]` | **Pane history forward** — jump forward through pane history |
 | `LEADER + r` | Reload config without restart |
 | `LEADER + e` | Open current selection (or viewport) in `$EDITOR` |
 | `LEADER + f` | Search scrollback buffer |
-| `LEADER + Space` | Quick select any text pattern |
+| `LEADER + Space` | Quick select any text pattern (URLs, file paths, git hashes, IPs, UUIDs, Docker container IDs) |
 | `LEADER + u` | Quick select URL and open in browser |
 | `LEADER + ?` | Show all key assignments |
 
 ### Tab Titles
 
-Tab titles automatically show the **CWD basename** when the active process is a shell (pwsh, cmd, bash, etc.). When running a named process (like `vim`, `node`, `python`), the process name is shown instead. This makes multi-project workflows much easier to navigate visually.
+Tab titles automatically show the **git repository root name** when inside a git repository, or the **CWD basename** otherwise. When running a named process (like `vim`, `node`, `python`), the process name is shown instead. This means all panes inside the same repo (even in subdirectories) share the repo name as their tab title, making multi-project workflows much easier to navigate visually.
 
 ---
 
@@ -358,6 +376,30 @@ Press **LEADER + Shift+3** — editor on the left, tests and logs stacked on the
 |       Editor        +----------+
 |                     |   Logs   |
 +---------------------+----------+
+```
+
+### 4-Pane Grid (2×2)
+
+Press **LEADER + Shift+4** — equal 2×2 grid:
+
+```
++---------------------+---------------------+
+|      Top-Left       |      Top-Right      |
++---------------------+---------------------+
+|     Bottom-Left     |    Bottom-Right     |
++---------------------+---------------------+
+```
+
+### Main + Sidebar
+
+Press **LEADER + Shift+5** — large main pane on the left (70%), narrow sidebar on the right (30%) with two stacked panes:
+
+```
++----------------------------------+----------+
+|                                  | Sidebar  |
+|             Main                 +----------+
+|                                  | Sidebar  |
++----------------------------------+----------+
 ```
 
 > **Note:** Layout shortcuts add panes to the current tab. Close unwanted panes with `LEADER + x`.
@@ -448,6 +490,8 @@ config.ssh_domains = {
 ```
 
 WezTerm also auto-reads `~/.ssh/config` — no extra setup for hosts already defined there.
+
+**Dynamic SSH host picker (LEADER + Shift+S):** No need to pre-configure `ssh_domains`. Press `LEADER + Shift+S` to fuzzy-pick any `Host` entry from `~/.ssh/config` and open an SSH session in a split pane instantly.
 
 ---
 
