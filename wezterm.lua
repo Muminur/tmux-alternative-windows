@@ -61,7 +61,7 @@ config.color_schemes = {
     cursor_fg     = neon.black,
     selection_bg  = neon.bg_sel,
     selection_fg  = neon.white,
-    scrollbar_thumb  = '#ffffff',
+    scrollbar_thumb  = neon.cyan,
     split            = neon.cyan,
     compose_cursor   = neon.orange,
     visual_bell      = neon.magenta,
@@ -122,7 +122,7 @@ config.text_background_opacity   = 1.0
 config.win32_system_backdrop     = 'Disable'  -- was 'Acrylic'; Acrylic blur is the #1 typing-lag cause on Windows
 
 config.window_decorations = 'TITLE | RESIZE'
-config.window_padding = { left = 6, right = 20, top = 4, bottom = 0 }
+config.window_padding = { left = 6, right = '2cell', top = 4, bottom = 0 }
 
 config.window_frame = {
   font      = wezterm.font { family = 'FiraCode Nerd Font', weight = 'Bold' },
@@ -1057,6 +1057,18 @@ config.key_tables = {
 -- Enhancement 5: git branch
 -- ============================================================
 wezterm.on('update-status', function(window, pane)
+  -- Smart scrollbar: hide in alternate screen (vim, htop, etc.), reclaim right padding
+  local overrides = window:get_config_overrides() or {}
+  local ok_alt, is_alt = pcall(function() return pane:is_alt_screen_active() end)
+  if ok_alt and is_alt then
+    overrides.enable_scroll_bar = false
+    overrides.window_padding    = { left = 6, right = 6, top = 4, bottom = 0 }
+  else
+    overrides.enable_scroll_bar = nil  -- fall back to config default (true)
+    overrides.window_padding    = nil  -- fall back to config default
+  end
+  window:set_config_overrides(overrides)
+
   local parts = {}
 
   -- Leader active indicator
@@ -1300,7 +1312,6 @@ config.status_update_interval                   = 1000  -- ms; keep at 1s for Le
 config.automatically_reload_config              = true
 config.check_for_updates                        = true
 config.check_for_updates_interval_seconds       = 86400
-config.show_update_window                       = false
 config.exit_behavior                            = 'CloseOnCleanExit'
 config.exit_behavior_messaging                  = 'Verbose'
 config.selection_word_boundary                  = ' \t\n{}[]()"\''
