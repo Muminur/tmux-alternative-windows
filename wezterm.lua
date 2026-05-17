@@ -20,12 +20,18 @@
 --              ALT+1–9        = workspace switch by index
 --  Tabs      : LEADER+< / >   = reorder tabs
 --              LEADER+!       = break pane out to new tab
+--              Tab title shows CWD basename when shell is active
 --  Modes     : LEADER+:       = command palette
 --              LEADER+R       = toggle read-only pane indicator
+--              LEADER+Ctrl+H  = enter resize mode (h/j/k/l, ESC to exit)
+--  Workspace : LEADER+B       = toggle last workspace (like tmux L)
+--              LEADER+P       = project launcher (fuzzy-pick from dirs)
+--              Status bar shows workspace index [N/M]
 --  Copy mode : full vim motions (^, H/M/L, f/F/t/T, ;/,)
 --  Broadcast : LEADER+Ctrl+X  = send text to all panes
 --  Bell      : toast notification for bells in unfocused panes
---  Status    : LEFT:  workspace, WAIT, ZOOM, RO, SAVED, pane count
+--  Notify    : toast when long-running cmd (>15s) completes in bg pane
+--  Status    : LEFT:  workspace [N/M], WAIT, ZOOM, RESIZE, RO, SAVED, pane count
 --              RIGHT: process, git branch, battery, clock
 -- ============================================================
 
@@ -40,6 +46,7 @@ local sync_windows  = {}  -- reserved for future sync-mode extensions
 local git_branch_cache = {} -- cwd -> { branch, expires }
 local readonly_panes = {} -- pane_id -> true for read-only panes
 local current_theme = 'NeonDark' -- toggles between NeonDark / NeonLight
+local prev_workspace = nil -- Enhancement: last-workspace toggle
 
 -- ============================================================
 -- NEON DARK COLOR SCHEME
@@ -738,6 +745,10 @@ local function get_git_branch(cwd)
     if #b > 0 and b ~= 'HEAD' then branch = b end
   end
 
+  local cache_size = 0
+  for _ in pairs(git_branch_cache) do cache_size = cache_size + 1 end
+  if cache_size > 200 then git_branch_cache = {} end
+
   git_branch_cache[cwd] = { branch = branch, expires = now + 30 }
   return branch
 end
@@ -778,6 +789,35 @@ local function spawn_agent_layout(root_pane)
   for i, p in ipairs(panes) do
     p:send_text('$Host.UI.RawUI.WindowTitle = "Agent-' .. i .. '"; Clear-Host\r')
   end
+end
+
+-- ============================================================
+-- PROJECT WORKSPACE LAUNCHER
+-- Scans known project roots, spawns workspace with 2-pane layout (editor + terminal)
+-- ============================================================
+local PROJECT_DIRS = {
+  'L:\\DesktopApp',
+  'C:\\Users\\Paula\\Projects',
+  wezterm.home_dir .. '/repos',
+}
+
+local function scan_project_dirs()
+  local projects = {}
+  for _, base in ipairs(PROJECT_DIRS) do
+    local norm = base:gsub('/', '\\')
+    local ok, success, stdout = pcall(wezterm.run_child_process, {
+      'cmd', '/c', 'dir', '/b', '/ad', norm,
+    })
+    if ok and success and stdout then
+      for line in stdout:gmatch('[^\r\n]+') do
+        line = line:gsub('%s+$', '')
+        if #line > 0 then
+          projects[#projects+1] = { label = line, path = norm .. '\\' .. line }
+        end
+      end
+    end
+  end
+  return projects
 end
 
 -- ============================================================
@@ -823,11 +863,12 @@ config.keys = {
   { key='UpArrow',    mods='LEADER', action=act.ActivatePaneDirection 'Up'    },
   { key='RightArrow', mods='LEADER', action=act.ActivatePaneDirection 'Right' },
 
-  -- ── PANE RESIZE ────────────────────────────────────────────
+  -- ── PANE RESIZE (one-shot: LEADER+Shift, continuous: LEADER+Ctrl+H enters resize mode) ──
   { key='H', mods='LEADER', action=act.AdjustPaneSize { 'Left',  5 } },
   { key='J', mods='LEADER', action=act.AdjustPaneSize { 'Down',  5 } },
   { key='K', mods='LEADER', action=act.AdjustPaneSize { 'Up',    5 } },
   { key='L', mods='LEADER', action=act.AdjustPaneSize { 'Right', 5 } },
+  { key='h', mods='LEADER|CTRL', action=act.ActivateKeyTable { name='resize_pane', one_shot=false } },
 
   -- ── PANE MANAGEMENT ────────────────────────────────────────
   { key='z', mods='LEADER', action=act.TogglePaneZoomState },
@@ -888,6 +929,55 @@ config.keys = {
         end
       end),
   }},
+
+  -- ── LAST WORKSPACE TOGGLE (like tmux prefix+L) ────────────
+  { key='B', mods='LEADER', action=wezterm.action_callback(function(window, _)
+      if prev_workspace then
+        local cur = mux.get_active_workspace()
+        if prev_workspace ~= cur then
+          local target = prev_workspace
+          prev_workspace = cur
+          last_known_workspace = target
+          mux.set_active_workspace(target)
+        end
+      else
+        pcall(function()
+          window:toast_notification('WezTerm', 'No previous workspace', nil, 2000)
+        end)
+      end
+  end)},
+
+  -- ── PROJECT WORKSPACE LAUNCHER (LEADER+P) ──────────────────
+  { key='P', mods='LEADER', action=wezterm.action_callback(function(window, pane)
+      local projects = scan_project_dirs()
+      if #projects == 0 then
+        pcall(function()
+          window:toast_notification('WezTerm', 'No projects found in configured dirs', nil, 3000)
+        end)
+        return
+      end
+      local choices = {}
+      for _, proj in ipairs(projects) do
+        choices[#choices+1] = { id = proj.path, label = proj.label .. '  (' .. proj.path .. ')' }
+      end
+      window:perform_action(act.InputSelector {
+        title   = 'Open Project Workspace',
+        choices = choices,
+        fuzzy   = true,
+        action  = wezterm.action_callback(function(w, p, id, label)
+          if id then
+            local name = label and label:match('^(%S+)') or id:match('([^/\\]+)$')
+            local shell = pwsh and { pwsh, '-NoLogo' } or { 'powershell.exe', '-NoLogo' }
+            local tab, first_pane, new_win = mux.spawn_window {
+              workspace = name, args = shell, cwd = id
+            }
+            tab:set_title(name)
+            first_pane:split { direction = 'Right', size = 0.5, args = shell, cwd = id }
+            mux.set_active_workspace(name)
+          end
+        end),
+      }, pane)
+  end)},
 
   -- ── ALT+1–9 WORKSPACE SWITCHING (sorted alphabetically) ─────
   { key='1', mods='ALT', action=wezterm.action_callback(function() local n = mux.get_workspace_names(); if n then table.sort(n) end; if n and n[1] then mux.set_active_workspace(n[1]) end end)},
@@ -1231,13 +1321,35 @@ config.key_tables = {
     { key='n',      mods='CTRL', action=act.CopyMode 'NextMatch'      },
     { key='p',      mods='CTRL', action=act.CopyMode 'PriorMatch'     },
   },
+  resize_pane = {
+    { key='h',      mods='NONE', action=act.AdjustPaneSize { 'Left',  2 } },
+    { key='j',      mods='NONE', action=act.AdjustPaneSize { 'Down',  2 } },
+    { key='k',      mods='NONE', action=act.AdjustPaneSize { 'Up',    2 } },
+    { key='l',      mods='NONE', action=act.AdjustPaneSize { 'Right', 2 } },
+    { key='LeftArrow',  mods='NONE', action=act.AdjustPaneSize { 'Left',  2 } },
+    { key='DownArrow',  mods='NONE', action=act.AdjustPaneSize { 'Down',  2 } },
+    { key='UpArrow',    mods='NONE', action=act.AdjustPaneSize { 'Up',    2 } },
+    { key='RightArrow', mods='NONE', action=act.AdjustPaneSize { 'Right', 2 } },
+    { key='Escape', mods='NONE', action=act.PopKeyTable },
+    { key='q',      mods='NONE', action=act.PopKeyTable },
+    { key='Enter',  mods='NONE', action=act.PopKeyTable },
+  },
 }
 
 -- ============================================================
 -- STATUS BAR — LEFT: workspace, mode indicators, pane count
 --              RIGHT: process, git, battery, clock
 -- ============================================================
+local last_known_workspace = nil  -- for prev_workspace tracking
+
 wezterm.on('update-status', function(window, pane)
+  -- Track workspace changes for last-workspace toggle
+  local current_ws = mux.get_active_workspace()
+  if last_known_workspace and current_ws ~= last_known_workspace then
+    prev_workspace = last_known_workspace
+  end
+  last_known_workspace = current_ws
+
   -- Smart scrollbar: hide in alternate screen (vim, htop, etc.), reclaim right padding
   local overrides = window:get_config_overrides() or {}
   local ok_alt, is_alt = pcall(function() return pane:is_alt_screen_active() end)
@@ -1250,15 +1362,23 @@ wezterm.on('update-status', function(window, pane)
   end
   window:set_config_overrides(overrides)
 
-  -- ── LEFT STATUS: workspace + mode indicators + pane count ──
+  -- ── LEFT STATUS: workspace [N/M] + mode indicators + pane count ──
   local left = {}
 
   local ws = mux.get_active_workspace()
+  local ws_idx_str = ''
+  local ok_ws_names, ws_names = pcall(mux.get_workspace_names)
+  if ok_ws_names and ws_names then
+    table.sort(ws_names)
+    for i, name in ipairs(ws_names) do
+      if name == ws then ws_idx_str = ' [' .. i .. '/' .. #ws_names .. ']'; break end
+    end
+  end
   left[#left+1] = wezterm.format {
     { Background = { Color = neon.cyan  } },
     { Foreground = { Color = neon.black } },
     { Attribute  = { Intensity = 'Bold' } },
-    { Text = '  ' .. ws .. ' ' },
+    { Text = '  ' .. ws .. ws_idx_str .. ' ' },
   }
 
   if window:leader_is_active() then
@@ -1283,6 +1403,16 @@ wezterm.on('update-status', function(window, pane)
         break
       end
     end
+  end
+
+  local active_key_table = window:active_key_table()
+  if active_key_table == 'resize_pane' then
+    left[#left+1] = wezterm.format {
+      { Background = { Color = neon.orange } },
+      { Foreground = { Color = neon.black  } },
+      { Attribute  = { Intensity = 'Bold'  } },
+      { Text = '  RESIZE  ' },
+    }
   end
 
   if readonly_panes[pane:pane_id()] then
@@ -1371,12 +1501,28 @@ wezterm.on('update-status', function(window, pane)
 end)
 
 -- ============================================================
--- TAB TITLE
+-- TAB TITLE — shows CWD basename when process is a shell
 -- ============================================================
+local SHELL_PROCS = { ['pwsh.exe']=true, ['powershell.exe']=true, ['cmd.exe']=true,
+  ['bash.exe']=true, ['bash']=true, ['zsh']=true, ['fish']=true, ['nu.exe']=true, ['wsl.exe']=true }
+
 wezterm.on('format-tab-title', function(tab, _, _, _, _, max_width)
   local p     = tab.active_pane
-  local title = (p.title and #p.title > 0) and p.title or 'bash'
+  local title = (p.title and #p.title > 0) and p.title or 'shell'
   local idx   = tab.tab_index + 1
+
+  local proc_name = (p.foreground_process_name or ''):match('([^/\\]+)$') or ''
+  if SHELL_PROCS[proc_name:lower()] or proc_name == '' then
+    local cwd = p.current_working_dir
+    if cwd then
+      local path = (cwd.file_path or tostring(cwd)):gsub('^/([A-Za-z]:)', '%1')
+      local basename = path:match('([^/\\]+)[/\\]*$')
+      if basename and #basename > 0 then
+        title = basename
+      end
+    end
+  end
+
   local max_t = max_width - 6
   if #title > max_t then title = title:sub(1, max_t-1) .. '…' end
   local label = ' ' .. idx .. ' ' .. title .. ' '
@@ -1409,6 +1555,46 @@ wezterm.on('bell', function(window, pane)
       window:toast_notification('WezTerm', 'Bell in: ' .. title, nil, 4000)
     end)
   end
+end)
+
+-- ============================================================
+-- LONG-RUNNING COMMAND NOTIFICATION
+-- Notifies when a command finishes after >15s in a non-focused pane.
+-- Requires PowerShell profile hook (add to $PROFILE):
+--   function prompt {
+--     $duration = if ($global:__wez_cmd_start) {
+--       ((Get-Date) - $global:__wez_cmd_start).TotalSeconds
+--     } else { 0 }
+--     if ($duration -gt 0) {
+--       [Console]::Write("`e]1337;SetUserVar=cmd_duration=$([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([int]$duration)))`a")
+--     }
+--     $global:__wez_cmd_start = Get-Date
+--     "PS $($PWD.Path)> "
+--   }
+-- ============================================================
+local CMD_NOTIFY_THRESHOLD = 15  -- seconds
+
+wezterm.on('user-var-changed', function(window, pane, name, value)
+  if name ~= 'cmd_duration' then return end
+  local decoded = value
+  pcall(function() decoded = wezterm.base64_decode(value) end)
+  local duration = tonumber(decoded) or 0
+  if duration < CMD_NOTIFY_THRESHOLD then return end
+
+  local active_pane = window:active_pane()
+  if active_pane and active_pane:pane_id() == pane:pane_id() then return end
+
+  local title = pane:get_title() or 'pane'
+  local mins  = math.floor(duration / 60)
+  local secs  = duration % 60
+  local time_str = mins > 0 and string.format('%dm %ds', mins, secs) or string.format('%ds', secs)
+  pcall(function()
+    window:toast_notification(
+      'WezTerm — Command Finished',
+      title .. ' completed after ' .. time_str,
+      nil, 5000
+    )
+  end)
 end)
 
 -- ============================================================

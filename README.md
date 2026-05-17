@@ -108,10 +108,16 @@ tmux requires WSL or Cygwin on Windows — it is a Linux tool bolted onto Window
 | Dark/Light theme toggle | No | **Yes** |
 | Command palette | No | **Yes** |
 | Bell notification for background panes | No | **Yes** |
+| Long-running command notification | No | **Yes** |
 | Session auto-pruning | No | **Yes** |
 | Alt+Arrow instant pane navigation | No | **Yes** |
 | Tab reordering | No | **Yes** |
 | Break pane out to new tab | No | **Yes** |
+| Last-workspace toggle (like tmux L) | Yes | **Yes** |
+| Pane resize mode (continuous) | Yes | **Yes** |
+| Project workspace launcher | tmuxinator plugin | **Built-in** |
+| CWD-aware tab titles | No | **Yes** |
+| Workspace index indicator [N/M] | No | **Yes** |
 
 ---
 
@@ -174,9 +180,10 @@ The status bar is split into two sides:
 
 | Badge | Colour | Meaning |
 |-------|--------|---------|
-| Workspace name | Cyan | Current workspace |
+| Workspace name `[N/M]` | Cyan | Current workspace + index/total |
 | `WAIT` | Magenta | Leader key is active |
 | `ZOOM` | Yellow | A pane is zoomed fullscreen |
+| `RESIZE` | Orange | Resize mode active (h/j/k/l to resize, ESC to exit) |
 | `RO` | Red | Pane is marked read-only |
 | `SAVED` | Green | Session was saved (shows for 30 s) |
 | `Np` | Yellow | Number of panes in active tab |
@@ -206,7 +213,8 @@ The leader key is **CTRL+B** — same as the tmux default.
 | `ALT + Arrow keys` | **Navigate panes instantly (no leader)** |
 | `LEADER + h/j/k/l` | Navigate panes (vim-style, with leader) |
 | `LEADER + Arrow keys` | Navigate panes (with leader) |
-| `LEADER + H/J/K/L` | Resize pane by 5 cells |
+| `LEADER + H/J/K/L` | Resize pane by 5 cells (one-shot) |
+| `LEADER + Ctrl+H` | **Enter resize mode** (h/j/k/l continuous, ESC/q to exit) |
 | `LEADER + z` | Zoom pane fullscreen toggle |
 | `LEADER + x` | Close current pane |
 | `LEADER + !` | **Break pane out to new tab** |
@@ -249,6 +257,8 @@ Useful with the 7-pane agent layout: run the same setup command across all agent
 | `LEADER + s` | Full launcher (workspaces + tabs + apps) |
 | `LEADER + W` | Create new named workspace |
 | `LEADER + $` | Rename current workspace |
+| `LEADER + B` | **Toggle last workspace** (like tmux prefix+L) |
+| `LEADER + P` | **Project launcher** — fuzzy-pick from project dirs, spawn workspace |
 | `ALT + 1–9` | **Switch to workspace by index (sorted A-Z)** |
 | `LEADER + D` | Connect to SSH domain |
 | `LEADER + d` | **Quit WezTerm** — closes the application (save session first with LEADER+Ctrl+S) |
@@ -305,6 +315,10 @@ Enter with `LEADER + [`, exit with `q` or `Esc`.
 | `LEADER + Space` | Quick select any text pattern |
 | `LEADER + u` | Quick select URL and open in browser |
 | `LEADER + ?` | Show all key assignments |
+
+### Tab Titles
+
+Tab titles automatically show the **CWD basename** when the active process is a shell (pwsh, cmd, bash, etc.). When running a named process (like `vim`, `node`, `python`), the process name is shown instead. This makes multi-project workflows much easier to navigate visually.
 
 ---
 
@@ -391,14 +405,26 @@ Named sessions (`LEADER + Ctrl+N`) write to a separate `<name>.json` file and ne
 
 **Q: How do I get notifications when a background command finishes?**
 
-Add a bell character to your PowerShell prompt so it rings when each command completes:
+**Option 1 — Long-running command notification (recommended):** Add this to your `$PROFILE`. WezTerm will toast-notify when any command that took >15 seconds finishes in a non-focused pane:
 
 ```powershell
-# Add to your PowerShell profile:
-function prompt { [char]7 + "PS $($PWD.Path)> " }
+function prompt {
+    $duration = if ($global:__wez_cmd_start) {
+        ((Get-Date) - $global:__wez_cmd_start).TotalSeconds
+    } else { 0 }
+    if ($duration -gt 0) {
+        [Console]::Write("`e]1337;SetUserVar=cmd_duration=$([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([int]$duration)))`a")
+    }
+    $global:__wez_cmd_start = Get-Date
+    "PS $($PWD.Path)> "
+}
 ```
 
-WezTerm will show a toast notification whenever a bell rings in an unfocused pane.
+**Option 2 — Bell notification:** Add a bell character to your prompt for a notification on every command completion in unfocused panes:
+
+```powershell
+function prompt { [char]7 + "PS $($PWD.Path)> " }
+```
 
 **Q: I closed WezTerm and my terminal output is gone. Can I get it back?**
 
@@ -422,6 +448,24 @@ config.ssh_domains = {
 ```
 
 WezTerm also auto-reads `~/.ssh/config` — no extra setup for hosts already defined there.
+
+---
+
+## Project Workspace Launcher
+
+Press **LEADER + P** to fuzzy-pick from your project directories and spawn a dedicated workspace (2-pane side-by-side layout, CWD set to the project root).
+
+Configure the scanned directories in `wezterm.lua`:
+
+```lua
+local PROJECT_DIRS = {
+  'L:\\DesktopApp',
+  'C:\\Users\\Paula\\Projects',
+  wezterm.home_dir .. '/repos',
+}
+```
+
+Each subdirectory of these paths becomes a selectable project. The spawned workspace is named after the project folder.
 
 ---
 
