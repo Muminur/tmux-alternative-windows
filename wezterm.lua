@@ -1226,10 +1226,34 @@ end)
 --     3. Otherwise → create default 'main' 2-pane workspace.
 --   Auto-save timer started in all branches.
 -- ============================================================
+-- Cross-process duplicate-launch guard.
+-- Each WezTerm process runs its own mux server and fires mux-startup independently.
+-- A timestamp lock file lets a second process detect it started within 30 s of the
+-- first and skip the full workspace spawn (preventing duplicate blank pane windows).
+local STARTUP_LOCK = wezterm.home_dir .. '\\.wezterm_startup.lock'
+local function is_duplicate_launch()
+  local f = io.open(STARTUP_LOCK, 'r')
+  if f then
+    local ts = tonumber(f:read('*l') or '0') or 0
+    f:close()
+    if os.time() - ts < 30 then return true end
+  end
+  local wf = io.open(STARTUP_LOCK, 'w')
+  if wf then wf:write(tostring(os.time())); wf:close() end
+  return false
+end
+
 wezterm.on('mux-startup', function()
   local shell = pwsh and { pwsh, '-NoLogo' } or { 'powershell.exe', '-NoLogo' }
 
-  -- Guard: if any non-default workspace exists the mux server
+  -- Guard 1: another WezTerm process started within the last 30 s — skip spawning
+  -- so we don't pollute with duplicate blank pane windows.
+  if is_duplicate_launch() then
+    start_autosave()
+    return
+  end
+
+  -- Guard 2: if any non-default workspace exists the mux server
   -- is already populated — do not re-run startup logic.
   local ok_names, names = pcall(mux.get_workspace_names)
   if ok_names and names then
@@ -1308,6 +1332,7 @@ config.launch_menu = {
 config.max_fps                                  = 60    -- cap render rate; prevents GPU thrash
 config.animation_fps                            = 10    -- cursor blink / scroll animations
 config.status_update_interval                   = 1000  -- ms; keep at 1s for Leader WAIT badge visibility (leader timeout = 2s)
+config.prefer_egl                               = true  -- prefer EGL over WGL; more stable on Intel integrated graphics
 
 config.automatically_reload_config              = true
 config.check_for_updates                        = true

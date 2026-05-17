@@ -4,7 +4,7 @@
 > Zero dependencies, one config file, works out of the box on Windows 10/11.
 
 [![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D4?logo=windows&logoColor=white)](https://wezfurlong.org/wezterm/)
-[![WezTerm](https://img.shields.io/badge/WezTerm-Latest-00ffe1)](https://wezfurlong.org/wezterm/)
+[![WezTerm](https://img.shields.io/badge/WezTerm-Nightly-00ffe1)](https://github.com/wezterm/wezterm/releases/tag/nightly)
 [![PowerShell 7](https://img.shields.io/badge/PowerShell-7-5391FE?logo=powershell)](https://github.com/PowerShell/PowerShell)
 [![FiraCode Nerd Font](https://img.shields.io/badge/Font-FiraCode_Nerd_Font-orange)](https://github.com/ryanoasis/nerd-fonts)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green)](LICENSE)
@@ -104,6 +104,7 @@ tmux requires WSL or Cygwin on Windows — it is a Linux tool bolted onto Window
 | Broadcast input to all panes | No | **Yes** |
 | Zoom indicator in status bar | No | **Yes** |
 | Git branch in status bar | No | **Yes** |
+| Scrollbar with smart auto-hide | No | **Yes** |
 
 ---
 
@@ -394,6 +395,7 @@ WezTerm also auto-reads `~/.ssh/config` — no extra setup for hosts already def
 | Green | `#00ff88` (session saved badge) |
 | Yellow | `#ffe566` (pane count, git branch, zoom badge) |
 | Cursor | Blinking cyan bar |
+| Scrollbar | Cyan thumb (`#00ffe1`), auto-hides in alternate screen (vim/htop) |
 | Backdrop | Solid (backdrop blur disabled for input latency) |
 | Font | FiraCode Nerd Font Medium 14px |
 | Ligatures | calt, clig, liga, ss01, ss03, ss05 |
@@ -421,11 +423,25 @@ winget install ajeetdsouza.zoxide
 
 ## Manual Installation
 
-### Step 1 — Install WezTerm
+### Step 1 — Install WezTerm Nightly
+
+Download the nightly installer (required — the stable release has a scrollbar rendering bug on Windows):
 
 ```powershell
-winget install --id WezFurlong.WezTerm --source winget
+Invoke-WebRequest -Uri "https://github.com/wezterm/wezterm/releases/download/nightly/WezTerm-nightly-setup.exe" `
+  -OutFile "$env:TEMP\WezTerm-nightly-setup.exe" -UseBasicParsing
+Start-Process "$env:TEMP\WezTerm-nightly-setup.exe" -Wait
 ```
+
+Or download the portable ZIP (no admin required):
+
+```powershell
+Invoke-WebRequest -Uri "https://github.com/wezterm/wezterm/releases/download/nightly/WezTerm-windows-nightly.zip" `
+  -OutFile "$env:TEMP\WezTerm-nightly.zip" -UseBasicParsing
+Expand-Archive "$env:TEMP\WezTerm-nightly.zip" -DestinationPath "$env:LOCALAPPDATA\WezTerm-nightly" -Force
+```
+
+> **Why nightly?** The last stable release (20240203) has a bug where the scrollbar never renders on Windows. The nightly builds (20260331+) fix this.
 
 ### Step 2 — Install PowerShell 7
 
@@ -558,6 +574,21 @@ install.ps1 -Update
 **`wezterm-mux-server.exe` is running in Task Manager — is that normal?**
 
 Yes. `wezterm-mux-server.exe` is WezTerm's internal mux process. It exits when you close WezTerm. Use `LEADER + Ctrl+S` to save your session before closing if you want to restore it later.
+
+---
+
+**Blank pane windows appear on startup / duplicate WezTerm windows**
+
+If WezTerm is launched while another instance is already running, each process starts its own mux server and fires the startup event independently, producing duplicate blank panes. The config guards against this with a 30-second timestamp lock file (`~/.wezterm_startup.lock`) — a second launch within that window skips the workspace spawn entirely.
+
+To clean up existing duplicates: close the extra blank windows manually (they have no content) or from PowerShell:
+
+```powershell
+# Find and close extra blank WezTerm pane processes (check they're idle first)
+Get-Process pwsh | Where-Object { $_.MainWindowTitle -eq '' } | Stop-Process -Confirm
+```
+
+To prevent it: **never launch WezTerm when it is already open**. Use `LEADER+c` for a new tab or `LEADER+W` for a new workspace instead.
 
 ---
 
