@@ -61,7 +61,7 @@ config.color_schemes = {
     cursor_fg     = neon.black,
     selection_bg  = neon.bg_sel,
     selection_fg  = neon.white,
-    scrollbar_thumb  = neon.purple,
+    scrollbar_thumb  = neon.white,
     split            = neon.cyan,
     compose_cursor   = neon.orange,
     visual_bell      = neon.magenta,
@@ -122,7 +122,7 @@ config.text_background_opacity   = 1.0
 config.win32_system_backdrop     = 'Disable'  -- was 'Acrylic'; Acrylic blur is the #1 typing-lag cause on Windows
 
 config.window_decorations = 'TITLE | RESIZE'
-config.window_padding = { left = 6, right = 6, top = 4, bottom = 0 }
+config.window_padding = { left = 6, right = 20, top = 4, bottom = 0 }
 
 config.window_frame = {
   font      = wezterm.font { family = 'FiraCode Nerd Font', weight = 'Bold' },
