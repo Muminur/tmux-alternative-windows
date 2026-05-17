@@ -80,3 +80,26 @@ Set-Alias gs  _gs
 if (Get-Command zoxide -ErrorAction SilentlyContinue) {
   Invoke-Expression (& { (zoxide init powershell | Out-String) })
 }
+
+# WezTerm: long-running command notification (>15s toast in background panes)
+# Only activates inside WezTerm. Records command start on Enter, emits duration
+# via OSC 1337 user-var so WezTerm can notify when a long command finishes.
+if ($env:WEZTERM_EXECUTABLE -or $env:TERM_PROGRAM -eq 'WezTerm') {
+  Set-PSReadLineKeyHandler -Key Enter -ScriptBlock {
+    $global:__wez_cmd_start = Get-Date
+    [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
+  }
+
+  $global:__wez_inner_prompt = $function:prompt
+  function global:prompt {
+    if ($global:__wez_cmd_start) {
+      $duration = [int]((Get-Date) - $global:__wez_cmd_start).TotalSeconds
+      if ($duration -gt 0) {
+        $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($duration.ToString()))
+        [Console]::Write("`e]1337;SetUserVar=cmd_duration=$b64`a")
+      }
+      $global:__wez_cmd_start = $null
+    }
+    if ($global:__wez_inner_prompt) { & $global:__wez_inner_prompt } else { "PS> " }
+  }
+}

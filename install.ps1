@@ -198,6 +198,9 @@ Write-Host '    LEADER+A         7-pane agent grid' -ForegroundColor DarkGray
 Write-Host '    LEADER+Shift+2   2-pane side-by-side (Code + Terminal)' -ForegroundColor DarkGray
 Write-Host '    LEADER+Shift+3   3-pane code layout (Editor + Tests + Logs)' -ForegroundColor DarkGray
 Write-Host '    LEADER+Ctrl+X    broadcast text to all panes in tab' -ForegroundColor DarkGray
+Write-Host '    LEADER+Ctrl+H    enter resize mode (h/j/k/l, ESC to exit)' -ForegroundColor DarkGray
+Write-Host '    LEADER+B         toggle last workspace (like tmux L)' -ForegroundColor DarkGray
+Write-Host '    LEADER+P         project launcher (fuzzy-pick directories)' -ForegroundColor DarkGray
 Write-Host ''
 Write-Host '  Session Save (tmux-resurrect style):' -ForegroundColor White
 Write-Host '    LEADER+Ctrl+S    save session to disk' -ForegroundColor DarkGray
@@ -208,6 +211,10 @@ Write-Host '    LEADER+Ctrl+D    delete a named session' -ForegroundColor DarkGr
 Write-Host '    Auto-saves every 15 minutes automatically' -ForegroundColor DarkGray
 Write-Host ''
 Write-Host "  Save file: $env:USERPROFILE\.wezterm_sessions\last.json" -ForegroundColor DarkCyan
+Write-Host ''
+Write-Host '  Notifications:' -ForegroundColor White
+Write-Host '    Long-running commands (>15s) in background panes trigger a toast' -ForegroundColor DarkGray
+Write-Host '    (built into PS profile - works automatically in WezTerm)' -ForegroundColor DarkGray
 Write-Host ''
 Write-Host '  Flags: -Update  -SkipWezTerm  -SkipPS7  -SkipFont  -SkipZoxide  -SkipStarship  -DryRun' -ForegroundColor DarkGray
 Write-Host ''
