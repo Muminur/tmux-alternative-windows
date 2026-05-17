@@ -29,14 +29,20 @@
 --              LEADER+Ctrl+H  = enter resize mode (h/j/k/l, ESC to exit)
 --              LEADER+Shift+O = opacity toggle (solid ↔ acrylic transparent)
 --  Workspace : LEADER+B       = toggle last workspace (like tmux L)
+--              LEADER+W       = workspace dashboard (fuzzy, shows tab/pane counts)
 --              LEADER+P       = project launcher (fuzzy-pick from dirs)
 --              LEADER+Shift+S = dynamic SSH host picker (from ~/.ssh/config)
 --              Status bar shows workspace index [N/M], accent color per workspace
 --  Copy mode : full vim motions (^, H/M/L, f/F/t/T, ;/,)
 --  Broadcast : LEADER+Ctrl+X  = one-shot send text to all panes
 --              LEADER+Ctrl+Y  = toggle sync mode (continuous, SYNC badge in status bar)
+--  Capture   : LEADER+Shift+C = copy full viewport text to clipboard
+--  Safe paste: LEADER+V       = paste with dangerous-pattern check (prompts before pasting)
+--  Dims      : inactive pane dimmed (saturation 85%, brightness 70%)
+--  Git tabs  : tab title updates within 5s of directory change (OSC 7 support via cwd_notify)
 --  Bell      : toast notification for bells in unfocused panes
 --  Notify    : toast when long-running cmd (>15s) completes in bg pane
+--  Sessions  : restore toast now shows workspace/tab/pane counts + invalid CWD count
 --  Status    : LEFT:  workspace [N/M] (accent color per workspace), WAIT, ZOOM, RESIZE, SYNC, RO,
 --                      SAVED (green), ⏱Nm (orange, 5-15 min), STALE (red, >15 min), pane count
 --              RIGHT: process, git branch + ✓ (clean) / ● (dirty), battery, clock
@@ -62,6 +68,33 @@ local pane_history     = {}      -- stack of pane_ids
 local pane_history_pos = 0       -- current position in stack
 local MAX_PANE_HISTORY = 20
 local last_tracked_pane = nil    -- to detect changes
+
+-- Enhancement 1: Floating/Scratch Pane state
+local scratch_pane = {}  -- window_id -> pane_id
+
+-- Enhancement 5: Per-Pane Labels state
+local pane_labels = {}  -- pane_id -> label string
+
+-- Enhancement 7: Last-Pane Toggle state
+local prev_active_pane = nil  -- pane_id of previously active pane
+
+-- Enhancement 14: Split ratio memory (per-workspace)
+local split_ratios = {}  -- workspace -> { horizontal = 0.5, vertical = 0.5 }
+
+-- Enhancement 12: Dangerous paste patterns (checked by LEADER+V safe paste)
+local dangerous_paste_patterns = {
+  'rm%s+%-rf%s+/',
+  'DROP%s+TABLE',
+  'DROP%s+DATABASE',
+  ':%(%){%s*:%|:&%s*};:',
+  '>%s*/dev/sda',
+  'mkfs%.',
+  'dd%s+if=',
+  '%-%-no%-preserve%-root',
+  'chmod%s+%-R%s+777%s+/',
+  'curl.*|.*sh',
+  'wget.*|.*sh',
+}
 
 -- ============================================================
 -- NEON DARK COLOR SCHEME
@@ -494,6 +527,39 @@ local function normalize_cwd(cwd_obj)
   return path
 end
 
+-- Enhancement 9: Windows-only path existence check
+-- Uses the NUL device trick for directories (no spawning required).
+local function path_exists(path)
+  if not path or #path == 0 then return false end
+  -- Windows directory check: open path\NUL (a magic file that always exists inside any real dir)
+  local f = io.open(path .. '\\NUL', 'r')
+  if f then f:close(); return true end
+  -- Fallback: try opening as a regular file
+  f = io.open(path, 'r')
+  if f then f:close(); return true end
+  return false
+end
+
+-- Enhancement 14: Split ratio helpers
+local function get_split_ratio(direction)
+  local ok_ws, ws = pcall(mux.get_active_workspace)
+  local workspace = (ok_ws and ws) or 'default'
+  local ratios = split_ratios[workspace]
+  if not ratios then return 0.5 end
+  return direction == 'Right' and (ratios.horizontal or 0.5) or (ratios.vertical or 0.5)
+end
+
+local function set_split_ratio(direction, ratio)
+  local ok_ws, ws = pcall(mux.get_active_workspace)
+  local workspace = (ok_ws and ws) or 'default'
+  if not split_ratios[workspace] then split_ratios[workspace] = {} end
+  if direction == 'Right' then
+    split_ratios[workspace].horizontal = ratio
+  else
+    split_ratios[workspace].vertical = ratio
+  end
+end
+
 -- ── List named session files ──────────────────────────────────
 -- Returns table of base names (without .json) from the session dir,
 -- excluding the reserved slots: last, prev, and any .tmp files.
@@ -634,11 +700,6 @@ end
 local function restore_panes(first_pane, panes_data, shell)
   if not panes_data or #panes_data == 0 then return end
 
-  local p1 = panes_data[1]
-  if p1 and p1.cwd and #p1.cwd > 0 then
-    first_pane:send_text('cd "' .. p1.cwd .. '"\r')
-  end
-
   local prev_pane = first_pane
   for i = 2, #panes_data do
     local p    = panes_data[i]
@@ -655,7 +716,6 @@ local function restore_panes(first_pane, panes_data, shell)
 
     local ok_s, new_pane = pcall(function() return prev_pane:split(split_args) end)
     if ok_s and new_pane then
-      if #cwd > 0 then new_pane:send_text('cd "' .. cwd .. '"\r') end
       prev_pane = new_pane
     end
   end
@@ -664,13 +724,13 @@ end
 -- ── Restore full session from save file ──────────────────────
 local function do_restore_session(shell, file_path)
   local f = io.open(file_path or SESSION_FILE, 'r')
-  if not f then return false end
+  if not f then return false, nil end
   local content = f:read('*a')
   f:close()
 
   local session = json_decode(content)
   if not (session and session.workspaces and #session.workspaces > 0) then
-    return false
+    return false, nil
   end
 
   -- Skip restore if session is trivial (single pane) — let the default 2-pane layout kick in
@@ -682,8 +742,10 @@ local function do_restore_session(shell, file_path)
       end
     end
   end
-  if total_panes <= 1 then return false end
+  if total_panes <= 1 then return false, nil end
 
+  -- Enhancement 9: track restore stats
+  local stats = { workspaces = 0, tabs = 0, panes = 0, invalid_cwds = 0 }
   local any_restored = false
 
   for _, ws in ipairs(session.workspaces) do
@@ -708,6 +770,17 @@ local function do_restore_session(shell, file_path)
     tab:set_title(first_tab.title or ws.name)
     restore_panes(first_pane, first_tab.panes, shell)
 
+    -- Enhancement 9: count stats for first tab
+    stats.tabs = stats.tabs + 1
+    if first_tab.panes then
+      for _, p in ipairs(first_tab.panes) do
+        stats.panes = stats.panes + 1
+        if p.cwd and #p.cwd > 0 and not path_exists(p.cwd) then
+          stats.invalid_cwds = stats.invalid_cwds + 1
+        end
+      end
+    end
+
     for j = 2, #win_data.tabs do
       local tab_data = win_data.tabs[j]
       local tab_cwd  = ''
@@ -724,9 +797,19 @@ local function do_restore_session(shell, file_path)
       if ok_t and new_tab then
         new_tab:set_title(tab_data.title or '')
         restore_panes(new_pane, tab_data.panes, shell)
+        stats.tabs = stats.tabs + 1
+        if tab_data.panes then
+          for _, p in ipairs(tab_data.panes) do
+            stats.panes = stats.panes + 1
+            if p.cwd and #p.cwd > 0 and not path_exists(p.cwd) then
+              stats.invalid_cwds = stats.invalid_cwds + 1
+            end
+          end
+        end
       end
     end
 
+    stats.workspaces = stats.workspaces + 1
     any_restored = true
 
     ::next_ws::
@@ -743,7 +826,7 @@ local function do_restore_session(shell, file_path)
     end
   end
 
-  return any_restored
+  return any_restored, stats
 end
 
 -- ── Auto-save loop  (tmux-continuum style) ───────────────────
@@ -808,7 +891,8 @@ local function get_git_info(cwd)
     end
   end
 
-  local info = { branch = branch, dirty = dirty, repo_root = repo_root, expires = now + 30 }
+  -- Enhancement 13: reduced TTL (5s) for faster tab-title updates on directory change
+  local info = { branch = branch, dirty = dirty, repo_root = repo_root, expires = now + 5 }
   git_branch_cache[cwd] = info
   return info
 end
@@ -912,6 +996,81 @@ local function parse_ssh_hosts()
 end
 
 -- ============================================================
+-- Enhancement 2: Process Color Indicator lookup table
+-- ============================================================
+local process_colors = {
+  ['ssh']     = '#ff4466', ['python']  = '#4fc3f7', ['python3'] = '#4fc3f7',
+  ['node']    = '#00ff88', ['docker']  = '#b48eff', ['cargo']   = '#ff9f00',
+  ['go']      = '#00ffe1', ['ruby']    = '#ff00aa', ['java']    = '#ffe566',
+}
+
+-- ============================================================
+-- Enhancement 3: Workspace Template Save helper
+-- ============================================================
+local function save_workspace_template(name, window)
+  local templates_dir = SESSION_DIR .. '/templates'
+  local dir_win = templates_dir:gsub('/', '\\')
+  os.execute('cmd /c if not exist "' .. dir_win .. '" mkdir "' .. dir_win .. '" 2>nul')
+
+  local ws_name = mux.get_active_workspace()
+  local ok_wins, all_wins = pcall(mux.all_windows)
+  if not (ok_wins and all_wins) then return false end
+
+  local ws_data = { name = ws_name, windows = {} }
+
+  for _, win in ipairs(all_wins) do
+    local ok_ws, win_ws = pcall(function() return win:get_workspace() end)
+    if not (ok_ws and win_ws == ws_name) then goto next_tw end
+
+    local win_data = { tabs = {} }
+    local ok_tabs, tabs = pcall(function() return win:tabs() end)
+    if ok_tabs and tabs then
+      for _, tab in ipairs(tabs) do
+        local tab_data = { title = tab:get_title() or '', panes = {} }
+        local ok_pi, panes_info = pcall(function() return tab:panes_with_info() end)
+        if ok_pi and panes_info then
+          for _, pinfo in ipairs(panes_info) do
+            local cwd = ''
+            local ok_cwd, cwd_obj = pcall(function() return pinfo.pane:get_current_working_dir() end)
+            if ok_cwd then cwd = normalize_cwd(cwd_obj) end
+            table.insert(tab_data.panes, {
+              index     = pinfo.index,
+              cwd       = cwd,
+              left      = pinfo.left,
+              top       = pinfo.top,
+              width     = pinfo.width,
+              height    = pinfo.height,
+              is_active = pinfo.is_active,
+            })
+          end
+        end
+        table.insert(win_data.tabs, tab_data)
+      end
+    end
+    table.insert(ws_data.windows, win_data)
+    break  -- one mux window per workspace
+    ::next_tw::
+  end
+
+  local template = {
+    version    = 2,
+    saved_at   = os.time(),
+    workspaces = { ws_data },
+  }
+
+  local dest = templates_dir .. '/' .. name .. '.json'
+  local tmp  = dest .. '.tmp'
+  local ok_write = pcall(function()
+    local f = assert(io.open(tmp, 'w'))
+    f:write(json_encode(template))
+    f:close()
+    os.remove(dest)
+    os.rename(tmp, dest)
+  end)
+  return ok_write
+end
+
+-- ============================================================
 -- KEY BINDINGS  (all tmux-equivalent + new enhancements)
 -- ============================================================
 config.keys = {
@@ -926,22 +1085,26 @@ config.keys = {
   { key='UpArrow',    mods='ALT', action=act.ActivatePaneDirection 'Up'    },
   { key='RightArrow', mods='ALT', action=act.ActivatePaneDirection 'Right' },
 
-  -- ── PANE SPLITTING (explicit cwd from active pane) ─────────
+  -- ── PANE SPLITTING (explicit cwd from active pane, ratio remembered per workspace) ─────────
   { key='|', mods='LEADER|SHIFT', action=wezterm.action_callback(function(_, pane)
       local cwd = pane:get_current_working_dir()
-      pane:split { direction = 'Right', cwd = cwd and normalize_cwd(cwd) or nil }
+      local ratio = get_split_ratio('Right')
+      pane:split { direction = 'Right', size = ratio, cwd = cwd and normalize_cwd(cwd) or nil }
   end)},
   { key='%', mods='LEADER|SHIFT', action=wezterm.action_callback(function(_, pane)
       local cwd = pane:get_current_working_dir()
-      pane:split { direction = 'Right', cwd = cwd and normalize_cwd(cwd) or nil }
+      local ratio = get_split_ratio('Right')
+      pane:split { direction = 'Right', size = ratio, cwd = cwd and normalize_cwd(cwd) or nil }
   end)},
   { key='-', mods='LEADER', action=wezterm.action_callback(function(_, pane)
       local cwd = pane:get_current_working_dir()
-      pane:split { direction = 'Bottom', cwd = cwd and normalize_cwd(cwd) or nil }
+      local ratio = get_split_ratio('Bottom')
+      pane:split { direction = 'Bottom', size = ratio, cwd = cwd and normalize_cwd(cwd) or nil }
   end)},
   { key='"', mods='LEADER|SHIFT', action=wezterm.action_callback(function(_, pane)
       local cwd = pane:get_current_working_dir()
-      pane:split { direction = 'Bottom', cwd = cwd and normalize_cwd(cwd) or nil }
+      local ratio = get_split_ratio('Bottom')
+      pane:split { direction = 'Bottom', size = ratio, cwd = cwd and normalize_cwd(cwd) or nil }
   end)},
 
   -- ── PANE NAVIGATION ────────────────────────────────────────
@@ -1012,14 +1175,50 @@ config.keys = {
         if line then mux.rename_workspace(mux.get_active_workspace(), line) end
       end),
   }},
-  { key='W', mods='LEADER', action=act.PromptInputLine {
-      description = 'New workspace name:',
-      action = wezterm.action_callback(function(window, pane, line)
-        if line and #line > 0 then
-          window:perform_action(act.SwitchToWorkspace { name = line }, pane)
+  -- ── Enhancement 10: WORKSPACE DASHBOARD (LEADER+W) ───────────
+  -- Replaces the old "new workspace name" prompt. Use LEADER+$ to rename, LEADER+w for launcher.
+  { key='W', mods='LEADER', action=wezterm.action_callback(function(window, pane)
+      local ok_names, names = pcall(mux.get_workspace_names)
+      if not (ok_names and names) or #names == 0 then
+        pcall(function() window:toast_notification('WezTerm', 'No workspaces', nil, 2000) end)
+        return
+      end
+      table.sort(names)
+      local ok_wins, all_wins = pcall(mux.all_windows)
+      local choices = {}
+      for i, name in ipairs(names) do
+        local tabs, panes = 0, 0
+        if ok_wins and all_wins then
+          for _, win in ipairs(all_wins) do
+            local ok_ws, ws = pcall(function() return win:get_workspace() end)
+            if ok_ws and ws == name then
+              local ok_t, ts = pcall(function() return win:tabs() end)
+              if ok_t and ts then
+                tabs = #ts
+                for _, t in ipairs(ts) do
+                  local ok_p, ps = pcall(function() return t:panes() end)
+                  if ok_p and ps then panes = panes + #ps end
+                end
+              end
+              break
+            end
+          end
         end
-      end),
-  }},
+        local marker = (name == mux.get_active_workspace()) and '● ' or '  '
+        choices[#choices+1] = {
+          id    = name,
+          label = marker .. name .. '  [' .. tabs .. ' tabs, ' .. panes .. ' panes]',
+        }
+      end
+      window:perform_action(act.InputSelector {
+        title   = 'Workspace Dashboard',
+        choices = choices,
+        fuzzy   = true,
+        action  = wezterm.action_callback(function(_, _, id, _)
+          if id then mux.set_active_workspace(id) end
+        end),
+      }, pane)
+  end)},
 
   -- ── LAST WORKSPACE TOGGLE (like tmux prefix+L) ────────────
   { key='B', mods='LEADER', action=wezterm.action_callback(function(window, _)
@@ -1161,13 +1360,13 @@ config.keys = {
   -- LEADER + Ctrl+R  →  restore workspaces from last save file
   { key='r', mods='LEADER|CTRL', action=wezterm.action_callback(function(window, _)
       local shell = pwsh and { pwsh, '-NoLogo' } or { 'powershell.exe', '-NoLogo' }
-      local ok = do_restore_session(shell)
+      local ok, stats = do_restore_session(shell)
       pcall(function()
-        window:toast_notification(
-          'WezTerm Sessions',
-          ok and 'Session restored  ' or 'No session file found',
-          nil, 3000
-        )
+        local msg = ok and ('Session restored  — '
+          .. (stats and (stats.workspaces .. ' ws, ' .. stats.tabs .. ' tabs, ' .. stats.panes .. ' panes'
+          .. (stats.invalid_cwds > 0 and (', ' .. stats.invalid_cwds .. ' bad CWDs') or '')) or ''))
+          or 'No session file found'
+        window:toast_notification('WezTerm Sessions', msg, nil, 4000)
       end)
   end)},
 
@@ -1175,13 +1374,13 @@ config.keys = {
   { key='b', mods='LEADER|CTRL', action=wezterm.action_callback(function(window, _)
       local shell    = pwsh and { pwsh, '-NoLogo' } or { 'powershell.exe', '-NoLogo' }
       local prev_file = SESSION_DIR .. '/prev.json'
-      local ok = do_restore_session(shell, prev_file)
+      local ok, stats = do_restore_session(shell, prev_file)
       pcall(function()
-        window:toast_notification(
-          'WezTerm Sessions',
-          ok and 'Backup session restored  ' or 'No backup session found',
-          nil, 3000
-        )
+        local msg = ok and ('Backup restored — '
+          .. (stats and (stats.workspaces .. ' ws, ' .. stats.tabs .. ' tabs, ' .. stats.panes .. ' panes'
+          .. (stats.invalid_cwds > 0 and (', ' .. stats.invalid_cwds .. ' bad CWDs') or '')) or ''))
+          or 'No backup session found'
+        window:toast_notification('WezTerm Sessions', msg, nil, 4000)
       end)
   end)},
 
@@ -1226,13 +1425,13 @@ config.keys = {
           if id then
             local shell = pwsh and { pwsh, '-NoLogo' } or { 'powershell.exe', '-NoLogo' }
             local path  = SESSION_DIR .. '/' .. id .. '.json'
-            local ok    = do_restore_session(shell, path)
+            local ok, stats = do_restore_session(shell, path)
             pcall(function()
-              w:toast_notification(
-                'WezTerm Sessions',
-                ok and ('Restored "' .. id .. '"') or 'Restore failed',
-                nil, 3000
-              )
+              local msg = ok and ('Restored "' .. id .. '" — '
+                .. (stats and (stats.workspaces .. ' ws, ' .. stats.tabs .. ' tabs, ' .. stats.panes .. ' panes'
+                .. (stats.invalid_cwds > 0 and (', ' .. stats.invalid_cwds .. ' bad CWDs') or '')) or ''))
+                or 'Restore failed'
+              w:toast_notification('WezTerm Sessions', msg, nil, 4000)
             end)
           end
         end),
@@ -1493,6 +1692,181 @@ config.keys = {
         end
       end
   end)},
+
+  -- ── Enhancement 1: FLOATING/SCRATCH PANE (LEADER+`) ──────────
+  { key='`', mods='LEADER', action=wezterm.action_callback(function(window, pane)
+      local wid = window:window_id()
+      local existing_id = scratch_pane[wid]
+      if existing_id then
+        -- Search ALL tabs in this window (not just active) to find the scratch pane
+        local found = false
+        local ok_mux, mux_win = pcall(function() return window:mux_window() end)
+        if ok_mux and mux_win then
+          local ok_tabs, tabs = pcall(function() return mux_win:tabs() end)
+          if ok_tabs and tabs then
+            for _, t in ipairs(tabs) do
+              local ok_pi, panes_info = pcall(function() return t:panes_with_info() end)
+              if ok_pi and panes_info then
+                for _, pinfo in ipairs(panes_info) do
+                  if pinfo.pane:pane_id() == existing_id then
+                    found = true
+                    pinfo.pane:activate()
+                    pinfo.pane:send_text('exit\r')
+                    break
+                  end
+                end
+              end
+              if found then break end
+            end
+          end
+        end
+        scratch_pane[wid] = nil
+        if not found then
+          local shell_args = pwsh and { pwsh, '-NoLogo' } or { 'powershell.exe', '-NoLogo' }
+          local new_pane = pane:split { direction = 'Bottom', size = 0.2, args = shell_args }
+          scratch_pane[wid] = new_pane:pane_id()
+        end
+      else
+        local shell_args = pwsh and { pwsh, '-NoLogo' } or { 'powershell.exe', '-NoLogo' }
+        local new_pane = pane:split { direction = 'Bottom', size = 0.2, args = shell_args }
+        scratch_pane[wid] = new_pane:pane_id()
+      end
+  end)},
+
+  -- ── Enhancement 3: WORKSPACE TEMPLATE SAVE (LEADER+Ctrl+T) ──
+  { key='t', mods='LEADER|CTRL', action=wezterm.action_callback(function(window, pane)
+      window:perform_action(act.PromptInputLine {
+        description = 'Save workspace template as (name):',
+        action = wezterm.action_callback(function(w, _, line)
+          if line and #line > 0 then
+            local safe = line:gsub('[^%w%-%_]', '_')
+            local ok   = save_workspace_template(safe, w)
+            pcall(function()
+              w:toast_notification(
+                'WezTerm Templates',
+                ok and ('Template saved as "' .. safe .. '"') or 'Template save failed',
+                nil, 3000
+              )
+            end)
+          end
+        end),
+      }, pane)
+  end)},
+
+  -- ── Enhancement 4: SMART SPLIT DIRECTION (LEADER+Enter) ──────
+  { key='Enter', mods='LEADER', action=wezterm.action_callback(function(_, pane)
+      local dims = pane:get_dimensions()
+      local cwd = pane:get_current_working_dir()
+      local cwd_path = cwd and normalize_cwd(cwd) or nil
+      local direction = (dims.cols > dims.viewport_rows * 2) and 'Right' or 'Bottom'
+      pane:split { direction = direction, cwd = cwd_path }
+  end)},
+
+  -- ── Enhancement 5: PANE LABEL/ANNOTATION (LEADER+.) ─────────
+  { key='.', mods='LEADER', action=wezterm.action_callback(function(window, pane)
+      window:perform_action(act.PromptInputLine {
+        description = 'Pane label (empty to clear):',
+        action = wezterm.action_callback(function(_, _, line)
+          if line and #line > 0 then
+            pane_labels[pane:pane_id()] = line
+          else
+            pane_labels[pane:pane_id()] = nil
+          end
+        end),
+      }, pane)
+  end)},
+
+  -- ── Enhancement 7: LAST-PANE TOGGLE (LEADER+;) ───────────────
+  { key=';', mods='LEADER', action=wezterm.action_callback(function(window, _)
+      if prev_active_pane then
+        local tab = window:active_tab()
+        local panes = tab:panes_with_info()
+        for _, pinfo in ipairs(panes) do
+          if pinfo.pane:pane_id() == prev_active_pane then
+            pinfo.pane:activate()
+            break
+          end
+        end
+      end
+  end)},
+
+  -- ── Enhancement 8: COMMAND OUTPUT CAPTURE (LEADER+Shift+C) ───
+  -- Captures the full viewport text of the active pane and copies to clipboard.
+  { key='C', mods='LEADER|SHIFT', action=wezterm.action_callback(function(window, pane)
+      local pane_id = tostring(pane:pane_id())
+      local ok, success, stdout = pcall(wezterm.run_child_process, {
+        'wezterm', 'cli', 'get-text', '--pane-id', pane_id,
+      })
+      if ok and success and stdout and #stdout > 0 then
+        window:copy_to_clipboard(stdout, 'Clipboard')
+        pcall(function()
+          window:toast_notification('WezTerm', 'Viewport text copied to clipboard (' .. #stdout .. ' chars)', nil, 3000)
+        end)
+      else
+        pcall(function()
+          window:toast_notification('WezTerm', 'Failed to capture pane text', nil, 3000)
+        end)
+      end
+  end)},
+
+  -- ── Enhancement 12: SAFE PASTE (LEADER+V) ────────────────────
+  -- Reads clipboard via PowerShell, checks against dangerous patterns,
+  -- and prompts for confirmation before pasting if a match is found.
+  { key='V', mods='LEADER', action=wezterm.action_callback(function(window, pane)
+      local ok, success, stdout = pcall(wezterm.run_child_process, {
+        'powershell.exe', '-NoProfile', '-Command', 'Get-Clipboard'
+      })
+      if not (ok and success and stdout) then
+        window:perform_action(act.PasteFrom 'Clipboard', pane)
+        return
+      end
+      local dangerous = false
+      for _, pat in ipairs(dangerous_paste_patterns) do
+        if stdout:find(pat) then
+          dangerous = true
+          break
+        end
+      end
+      if dangerous then
+        window:perform_action(act.PromptInputLine {
+          description = 'WARNING: dangerous content detected! Type "yes" to paste anyway:',
+          action = wezterm.action_callback(function(w, p, line)
+            if line and line:lower() == 'yes' then
+              w:perform_action(act.PasteFrom 'Clipboard', p)
+            else
+              pcall(function()
+                w:toast_notification('WezTerm', 'Paste cancelled', nil, 2000)
+              end)
+            end
+          end),
+        }, pane)
+      else
+        window:perform_action(act.PasteFrom 'Clipboard', pane)
+      end
+  end)},
+
+  -- ── Enhancement 14: SET SPLIT RATIO (LEADER+Ctrl+Shift+R) ───
+  -- Prompts for a decimal ratio (0.1–0.9) and stores it per workspace.
+  -- Subsequent | / % / - / " splits will use the stored ratio.
+  { key='R', mods='LEADER|CTRL|SHIFT', action=wezterm.action_callback(function(window, pane)
+      window:perform_action(act.PromptInputLine {
+        description = 'Split ratio for this workspace (0.1–0.9, default 0.5):',
+        action = wezterm.action_callback(function(_, _, line)
+          local ratio = tonumber(line)
+          if ratio and ratio >= 0.1 and ratio <= 0.9 then
+            set_split_ratio('Right',  ratio)
+            set_split_ratio('Bottom', ratio)
+            pcall(function()
+              window:toast_notification('WezTerm', ('Split ratio set to %.2f'):format(ratio), nil, 2000)
+            end)
+          else
+            pcall(function()
+              window:toast_notification('WezTerm', 'Invalid ratio — must be 0.1 to 0.9', nil, 2000)
+            end)
+          end
+        end),
+      }, pane)
+  end)},
 }
 
 -- ============================================================
@@ -1573,10 +1947,16 @@ wezterm.on('update-status', function(window, pane)
   end
   last_known_workspace = current_ws
 
-  -- Track pane focus for history navigation (Enhancement 4)
+  -- Track pane focus for history navigation (Enhancement 4) and last-pane toggle (Enhancement 7)
   local current_pane_id = pane:pane_id()
   if current_pane_id ~= last_tracked_pane then
-    if last_tracked_pane ~= nil then
+    if last_tracked_pane == nil then
+      -- First pane ever tracked — seed the history
+      pane_history[1] = current_pane_id
+      pane_history_pos = 1
+    else
+      -- Enhancement 7: record the pane that was active before this one
+      prev_active_pane = last_tracked_pane
       -- Trim forward history when navigating normally (not via back/forward)
       if pane_history_pos < #pane_history then
         for i = #pane_history, pane_history_pos + 1, -1 do
@@ -1715,6 +2095,45 @@ wezterm.on('update-status', function(window, pane)
         { Text = '  ' .. #tab_panes .. 'p ' },
       }
     end
+
+    -- Enhancement 5: show pane label if one is set for the active pane
+    local pane_label = pane_labels[pane:pane_id()]
+    if pane_label then
+      left[#left+1] = wezterm.format {
+        { Background = { Color = neon.bg_sel  } },
+        { Foreground = { Color = neon.cyan    } },
+        { Attribute  = { Intensity = 'Bold'   } },
+        { Text = '  ' .. pane_label .. ' ' },
+      }
+    end
+
+    -- Enhancement 6: dead pane detection
+    local ok_pwi, panes_with_info = pcall(function() return active_tab:panes_with_info() end)
+    if ok_pwi and panes_with_info then
+      local has_dead = false
+      for _, pinfo in ipairs(panes_with_info) do
+        local ok_fp, fp = pcall(function() return pinfo.pane:get_foreground_process_name() end)
+        local proc_empty = (not ok_fp) or (not fp) or (#fp == 0)
+        if proc_empty then
+          local ok_pt, ptitle = pcall(function() return pinfo.pane:get_title() end)
+          if ok_pt and ptitle then
+            local lower_title = ptitle:lower()
+            if lower_title:find('completed') or lower_title:find('exited') then
+              has_dead = true
+              break
+            end
+          end
+        end
+      end
+      if has_dead then
+        left[#left+1] = wezterm.format {
+          { Background = { Color = neon.orange } },
+          { Foreground = { Color = neon.black  } },
+          { Attribute  = { Intensity = 'Bold'  } },
+          { Text = '  DEAD  ' },
+        }
+      end
+    end
   end
 
   window:set_left_status(table.concat(left))
@@ -1727,9 +2146,12 @@ wezterm.on('update-status', function(window, pane)
   proc = proc or ''
   if proc ~= '' then
     proc = proc:match('([^/\\]+)$') or proc
+    -- Enhancement 2: per-process color indicator
+    local proc_key   = proc:lower():gsub('%.exe$', '')
+    local proc_color = process_colors[proc_key] or neon.purple
     right[#right+1] = wezterm.format {
       { Background = { Color = neon.bg_panel } },
-      { Foreground = { Color = neon.purple   } },
+      { Foreground = { Color = proc_color    } },
       { Text = '  ' .. proc .. ' ' },
     }
   end
@@ -1861,6 +2283,16 @@ end)
 local CMD_NOTIFY_THRESHOLD = 15  -- seconds
 
 wezterm.on('user-var-changed', function(window, pane, name, value)
+  -- Enhancement 13: invalidate git cache on directory change for instant tab rename
+  if name == 'cwd_notify' then
+    local decoded = value
+    pcall(function() decoded = wezterm.base64_decode(value) end)
+    if decoded and #decoded > 0 then
+      git_branch_cache[decoded] = nil  -- force immediate re-query on next format-tab-title
+    end
+    return
+  end
+
   if name ~= 'cmd_duration' then return end
   local decoded = value
   pcall(function() decoded = wezterm.base64_decode(value) end)
@@ -1967,7 +2399,7 @@ wezterm.on('mux-startup', function()
   if has_session then
     -- Defer heavy session restore so the GUI client doesn't time out
     wezterm.time.call_after(2, function()
-      do_restore_session(shell)
+      do_restore_session(shell)  -- stats ignored at startup (no window for toast)
       start_autosave()
     end)
   else
@@ -2020,6 +2452,9 @@ config.max_fps                                  = 60    -- cap render rate; prev
 config.animation_fps                            = 10    -- cursor blink / scroll animations
 config.status_update_interval                   = 1000  -- ms; keep at 1s for Leader WAIT badge visibility (leader timeout = 2s)
 config.prefer_egl                               = true  -- prefer EGL over WGL; more stable on Intel integrated graphics
+
+-- Enhancement 11: Inactive pane dimming (subtle desaturation + brightness reduction)
+config.inactive_pane_hsb = { saturation = 0.85, brightness = 0.7 }
 
 config.automatically_reload_config              = true
 config.check_for_updates                        = true

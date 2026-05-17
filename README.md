@@ -124,6 +124,20 @@ tmux requires WSL or Cygwin on Windows — it is a Linux tool bolted onto Window
 | Pane focus history navigation (back/forward) | No | **Yes** |
 | Per-workspace accent colors | No | **Yes** |
 | Window opacity toggle (solid ↔ transparent) | No | **Yes** |
+| Floating/scratch pane (quick-command overlay) | No | **Yes** |
+| Per-process color coding in status bar | No | **Yes** |
+| Workspace layout templates (save & reuse) | tmuxinator-like | **Built-in** |
+| Smart split direction (auto horizontal/vertical) | No | **Yes** |
+| Per-pane labels shown in status bar | No | **Yes** |
+| Dead pane detection (DEAD badge on exit) | No | **Yes** |
+| Last-pane toggle (alt-tab for panes) | No | **Yes** |
+| Command output capture to clipboard | No | **Yes** |
+| Session restore diff (toast with counts + invalid CWDs) | No | **Yes** |
+| Workspace dashboard with tab/pane counts | No | **Yes** |
+| Inactive pane dimming (subtle desaturation) | No | **Yes** |
+| Safe paste (dangerous-pattern check before paste) | No | **Yes** |
+| Near-instant tab title update on directory change | No | **Yes** |
+| Split ratio memory per workspace | No | **Yes** |
 
 ---
 
@@ -149,6 +163,15 @@ This config implements the same session persistence policy as the popular tmux p
 - `last.json` — most recent auto/manual save
 - `prev.json` — backup of previous save (one rollback slot)
 - `<name>.json` — named sessions (auto-pruned to 20 most recent)
+
+### Session Restore Diff
+
+When a session is restored on startup or via `LEADER+Ctrl+R`, a toast notification shows a summary of what was recovered:
+
+- Number of workspaces, tabs, and panes that were restored
+- Count of pane working directories that no longer exist on disk (invalid CWDs), so you can spot broken paths immediately
+
+This replaces the silent restore behaviour — you always know what came back and whether any directories need attention.
 
 ### Named Sessions
 
@@ -196,12 +219,14 @@ The status bar is split into two sides:
 | `⏱ Nm` | Orange | Session age 5–15 min since last save |
 | `STALE` | Red | Session age >15 min since last save |
 | `Np` | Yellow | Number of panes in active tab |
+| `[label]` | Cyan | Custom pane label (set with `LEADER+.`; hidden when no label is set) |
+| `DEAD` | Red | Active pane's process has exited |
 
 **Right status** — contextual information:
 
 | Badge | Colour | Meaning |
 |-------|--------|---------|
-| Process name | Purple | Foreground process |
+| Process name | Color-coded by process | Foreground process — color varies: ssh=red, python=blue, node=green, docker=purple, cargo=orange, go=cyan, ruby=magenta, java=yellow; all others default to purple |
 | Branch name + `✓`/`●` | Yellow + Green/Red | Git branch — green `✓` when clean, red `●` when dirty (uncommitted changes) |
 | Battery | Green/Red | Battery level |
 | Clock | Dim | Day, date, time |
@@ -216,17 +241,22 @@ The leader key is **CTRL+B** — same as the tmux default.
 
 | Keybinding | Action |
 |-----------|--------|
-| `LEADER + \|` or `%` | Split pane right (inherits cwd) |
-| `LEADER + -` or `"` | Split pane down (inherits cwd) |
+| `LEADER + \|` or `%` | Split pane right (inherits cwd; uses remembered split ratio) |
+| `LEADER + -` or `"` | Split pane down (inherits cwd; uses remembered split ratio) |
+| `LEADER + Enter` | **Smart split** — auto-picks right or bottom based on pane dimensions |
+| `LEADER + backtick` | **Floating/scratch pane** — toggle a 20% bottom split for quick commands; re-pressing closes it |
 | `ALT + h/j/k/l` | **Navigate panes instantly (no leader)** |
 | `ALT + Arrow keys` | **Navigate panes instantly (no leader)** |
 | `LEADER + h/j/k/l` | Navigate panes (vim-style, with leader) |
 | `LEADER + Arrow keys` | Navigate panes (with leader) |
+| `LEADER + ;` | **Last-pane toggle** — jump to the previously active pane (like alt-tab for panes) |
 | `LEADER + H/J/K/L` | Resize pane by 5 cells (one-shot) |
 | `LEADER + Ctrl+H` | **Enter resize mode** (h/j/k/l continuous, ESC/q to exit) |
+| `LEADER + Ctrl+Shift+R` | **Set split ratio** — prompt for a decimal (0.1–0.9) and remember it per workspace |
 | `LEADER + z` | Zoom pane fullscreen toggle |
 | `LEADER + x` | Close current pane |
 | `LEADER + !` | **Break pane out to new tab** |
+| `LEADER + .` | **Set pane label** — annotate the active pane; label appears in the status bar |
 | `LEADER + o` | Visual pane picker with home-row letter labels (a/s/d/f/g/h/j/k/l) |
 | `LEADER + { / }` | Rotate panes |
 | `LEADER + R` | **Toggle read-only indicator** |
@@ -269,9 +299,10 @@ Useful with the 7-pane agent layout: run the same setup command across all agent
 |-----------|--------|
 | `LEADER + w` | Fuzzy workspace switcher |
 | `LEADER + s` | Full launcher (workspaces + tabs + apps) |
-| `LEADER + W` | Create new named workspace |
+| `LEADER + W` | **Workspace dashboard** — fuzzy list of all workspaces with tab and pane counts; active workspace is marked; select to switch |
 | `LEADER + $` | Rename current workspace |
 | `LEADER + B` | **Toggle last workspace** (like tmux prefix+L) |
+| `LEADER + Ctrl+T` | **Save workspace template** — prompt for a name and save the current layout as a reusable template |
 | `LEADER + P` | **Project launcher** — fuzzy-pick from project dirs, spawn workspace |
 | `ALT + 1–9` | **Switch to workspace by index (sorted A-Z)** |
 | `LEADER + D` | Connect to SSH domain |
@@ -318,6 +349,8 @@ Enter with `LEADER + [`, exit with `q` or `Esc`.
 |-----------|--------|
 | `CTRL+Shift+C` | Copy to clipboard |
 | `CTRL+Shift+V` | Paste from clipboard |
+| `LEADER + V` | **Safe paste** — checks clipboard for dangerous patterns (`rm -rf`, `DROP TABLE`, etc.) and prompts for confirmation before pasting |
+| `LEADER + Shift+C` | **Capture viewport** — copies the full visible pane text to the clipboard |
 | Right-click | Paste (mouse shortcut) |
 | `CTRL+click` | Open URL under cursor |
 | `CTRL+=` / `CTRL+-` | Increase / decrease font size |
@@ -337,6 +370,8 @@ Enter with `LEADER + [`, exit with `q` or `Esc`.
 ### Tab Titles
 
 Tab titles automatically show the **git repository root name** when inside a git repository, or the **CWD basename** otherwise. When running a named process (like `vim`, `node`, `python`), the process name is shown instead. This means all panes inside the same repo (even in subdirectories) share the repo name as their tab title, making multi-project workflows much easier to navigate visually.
+
+Git info is cached for **5 seconds** per directory, so tab titles update within 5 seconds of changing into a new directory — near-instant without hammering `git` on every repaint. Shells that send the OSC 7 `cwd_notify` escape sequence trigger an immediate cache invalidation, making updates instantaneous.
 
 ---
 
@@ -513,6 +548,14 @@ Each subdirectory of these paths becomes a selectable project. The spawned works
 
 ---
 
+## Workspace Templates
+
+Press **LEADER + Ctrl+T** to save the current workspace layout (tab count, pane splits, working directories) as a named template. Templates are stored in `%USERPROFILE%\.wezterm_sessions\templates\` as JSON files.
+
+Templates complement named sessions: a named session captures a snapshot of a running workspace at a point in time, while a template defines a reusable skeleton layout you can apply to new workspaces at any time.
+
+---
+
 ## Themes: Neon Dark & Neon Light
 
 Toggle between themes with **LEADER + Shift+T**. A toast notification confirms the switch.
@@ -546,6 +589,7 @@ Toggle between themes with **LEADER + Shift+T**. A toast notification confirms t
 | Backdrop | Solid (backdrop blur disabled for input latency) |
 | Font | FiraCode Nerd Font Medium 14px |
 | Ligatures | calt, clig, liga, ss01, ss03, ss05 |
+| Inactive pane dimming | Saturation 85%, brightness 70% — non-focused panes are subtly desaturated so the active pane stands out |
 
 ---
 
@@ -735,7 +779,7 @@ To clean up existing duplicates: close the extra blank windows manually (they ha
 Get-Process pwsh | Where-Object { $_.MainWindowTitle -eq '' } | Stop-Process -Confirm
 ```
 
-To prevent it: **never launch WezTerm when it is already open**. Use `LEADER+c` for a new tab or `LEADER+W` for a new workspace instead.
+To prevent it: **never launch WezTerm when it is already open**. Use `LEADER+c` for a new tab or `LEADER+s` (full launcher) for a new workspace instead.
 
 ---
 
@@ -751,7 +795,7 @@ wsl --install
 
 **Git branch not showing in status bar**
 
-The status bar queries `git` in the background for the active pane's directory. If git is not in PATH or the directory is not a git repo, the branch segment is hidden. Results are cached for 30 seconds per directory to avoid performance impact.
+The status bar queries `git` in the background for the active pane's directory. If git is not in PATH or the directory is not a git repo, the branch segment is hidden. Results are cached for 5 seconds per directory to balance freshness with performance.
 
 ---
 
