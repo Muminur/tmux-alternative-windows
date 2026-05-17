@@ -116,7 +116,7 @@ This config implements the same session persistence policy as the popular tmux p
 | `tmux-resurrect` — manual save/restore | `LEADER + Ctrl+S` / `LEADER + Ctrl+R` |
 | `tmux-resurrect` — named sessions | `LEADER + Ctrl+N` / `LEADER + Ctrl+L` |
 | `tmux-continuum` — auto-save every 15 min | Built-in auto-save timer |
-| `tmux-continuum` — auto-restore on start | Auto-restores on mux server startup |
+| `tmux-continuum` — auto-restore on start | Auto-restores on WezTerm startup |
 
 **What is saved:**
 - All workspace names (equivalent to tmux sessions)
@@ -144,10 +144,9 @@ LEADER + Ctrl+D  →  fuzzy-pick from saved names and delete
 
 ```
 On startup:
-  1. Check if mux server already has workspaces → if yes, reattach (no restart)
-  2. Check if ~/.wezterm_sessions/last.json exists → if yes, restore it
+  1. Check if ~/.wezterm_sessions/last.json exists → if yes, restore it
      (restores to the active workspace that was open when last saved)
-  3. Otherwise → create default 'main' workspace with 2-pane layout
+  2. Otherwise → create default 'main' workspace with 2-pane layout
 
 Every 15 minutes:
   Auto-save all workspaces to last.json
@@ -228,7 +227,7 @@ Useful with the 7-pane agent layout: run the same setup command across all agent
 | `LEADER + W` | Create new named workspace |
 | `LEADER + $` | Rename current workspace |
 | `LEADER + D` | Connect to SSH domain |
-| `LEADER + d` | **Detach GUI** — closes the window, mux server keeps running |
+| `LEADER + d` | **Quit WezTerm** — closes the application (save session first with LEADER+Ctrl+S) |
 
 ### Session Save & Restore (tmux-resurrect style)
 
@@ -322,28 +321,20 @@ Press **LEADER + Shift+3** — editor on the left, tests and logs stacked on the
 
 ## Built-in Multiplexer (Persistent Sessions)
 
-WezTerm includes a built-in session server — like `tmux new-session` but with nothing extra to install.
+WezTerm includes a built-in workspace system for organising your terminal sessions. Session persistence is handled entirely through JSON save files — no external server required.
 
-**Auto-attach is enabled by default.** WezTerm starts a persistent mux server on launch and reconnects to your existing workspaces automatically.
-
-Connect manually from a new terminal window:
-
-```powershell
-wezterm connect mux
-```
+**Auto-restore is enabled by default.** On startup WezTerm checks for `~/.wezterm_sessions/last.json` and restores your workspace layout automatically.
 
 ### Safely closing WezTerm (preserving your session)
 
 | Action | What happens | Session preserved? |
 |--------|-------------|-------------------|
-| Close the WezTerm **window** (X button / Alt+F4) | GUI closes, mux server keeps running | Yes |
-| Open WezTerm again | Auto-reconnects to running mux server, all panes intact | Yes |
+| Close the WezTerm **window** (X button / Alt+F4) | WezTerm exits completely | Only if saved to disk |
+| Open WezTerm again | Auto-restores from last save file | Yes (from last auto-save or manual save) |
 | Say **Yes** to "kill all panes?" | Processes are killed, session is gone | No |
 | `CTRL+D` in a shell | Exits that shell, closes that pane only | That pane lost |
 
-**Rule of thumb:** To preserve your session without a save file, always close the WezTerm **window** — never say "yes" to killing panes.
-
-With session save/restore (`LEADER + Ctrl+S`), you can safely kill the mux server and fully restore your workspace layout on next startup.
+**Rule of thumb:** Press `LEADER + Ctrl+S` before closing WezTerm to make sure your workspace layout is saved. Auto-save runs every 15 minutes, but a manual save guarantees nothing is lost.
 
 ### Session Persistence FAQ
 
@@ -369,7 +360,7 @@ Named sessions (`LEADER + Ctrl+N`) write to a separate `<name>.json` file and ne
 
 **Q: I closed WezTerm and my terminal output is gone. Can I get it back?**
 
-No — terminal output lives in RAM. Once the mux server exits, the scrollback is permanently gone. This is a fundamental property of all terminal multiplexers. Use `LEADER+Ctrl+S` before closing to save your workspace layout.
+No — terminal output lives in RAM. Once WezTerm exits, the scrollback is permanently gone. This is a fundamental property of all terminal emulators. Use `LEADER+Ctrl+S` before closing to save your workspace layout.
 
 **Q: How much scrollback history is kept during a live session?**
 
@@ -548,12 +539,6 @@ config.window_decorations = 'TITLE | RESIZE'
 
 ---
 
-**Error: "local is a built-in domain"**
-
-Old config has `name = 'local'` in `unix_domains`. The current config uses `name = 'mux'`. Re-download `wezterm.lua` to fix.
-
----
-
 **Session restore creates duplicate workspaces**
 
 Press `LEADER + Ctrl+R` only when starting fresh. If you already have workspaces open, the restore will add more. Close unwanted workspaces with `LEADER + &`.
@@ -572,13 +557,7 @@ install.ps1 -Update
 
 **`wezterm-mux-server.exe` is running in Task Manager — is that normal?**
 
-Yes. `wezterm-mux-server.exe` is the background process that keeps your sessions alive between GUI window opens. It is safe and expected. Killing it is equivalent to `tmux kill-server`.
-
-```powershell
-Stop-Process -Name wezterm-mux-server -ErrorAction SilentlyContinue
-```
-
-Use `LEADER + Ctrl+S` before killing it to save your session first.
+Yes. `wezterm-mux-server.exe` is WezTerm's internal mux process. It exits when you close WezTerm. Use `LEADER + Ctrl+S` to save your session before closing if you want to restore it later.
 
 ---
 

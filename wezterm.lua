@@ -6,7 +6,7 @@
 --  Agents    : 7-pane Claude Code workspace on startup
 --  Work tab  : 2-pane side-by-side
 --  Leader    : CTRL+B  (tmux default)
---  Mux       : built-in unix domain (wezterm connect mux)
+--  Mux       : built-in workspaces (session save/restore via JSON)
 --  Sessions  : tmux-resurrect/continuum style save & restore
 --              LEADER+Ctrl+S = save   LEADER+Ctrl+R = restore
 --              LEADER+Ctrl+N = save named session
@@ -61,7 +61,7 @@ config.color_schemes = {
     cursor_fg     = neon.black,
     selection_bg  = neon.bg_sel,
     selection_fg  = neon.white,
-    scrollbar_thumb  = neon.bg_panel,
+    scrollbar_thumb  = neon.purple,
     split            = neon.cyan,
     compose_cursor   = neon.orange,
     visual_bell      = neon.magenta,
@@ -191,15 +191,6 @@ if pwsh then
 else
   config.default_prog = { 'powershell.exe', '-NoLogo' }
 end
-
--- ============================================================
--- BUILT-IN MULTIPLEXER  (like tmux — persists sessions)
---   Attach:  wezterm connect mux
--- ============================================================
-config.unix_domains = {
-  { name = 'mux' },
-}
-config.default_gui_startup_args = { 'connect', 'mux' }
 
 -- ============================================================
 -- SSH DOMAINS  — add your servers here
@@ -520,9 +511,11 @@ local function do_save_session(dest_file)
       local existing = io.open(dest_file, 'r')
       if existing then
         existing:close()
+        os.remove(prev_file)       -- Windows: os.rename fails if target exists
         os.rename(dest_file, prev_file)
       end
     end
+    os.remove(dest_file)           -- Windows: os.rename fails if target exists
     os.rename(tmp_file, dest_file)
   end)
 
@@ -1224,6 +1217,8 @@ end)
 wezterm.on('mux-startup', function()
   local shell = pwsh and { pwsh, '-NoLogo' } or { 'powershell.exe', '-NoLogo' }
 
+  -- Guard: if any non-default workspace exists the mux server
+  -- is already populated — do not re-run startup logic.
   local ok_names, names = pcall(mux.get_workspace_names)
   if ok_names and names then
     for _, name in ipairs(names) do
@@ -1235,16 +1230,28 @@ wezterm.on('mux-startup', function()
     end
   end
 
-  local restored = do_restore_session(shell)
+  -- Create a minimal workspace immediately so the mux handshake
+  -- can complete without waiting for session restore / process spawns.
+  local tab, left, _ = mux.spawn_window { workspace = 'main', args = shell }
+  tab:set_title('Work')
+  mux.set_active_workspace('main')
 
-  if not restored then
-    local tab, left, _ = mux.spawn_window { workspace = 'main', args = shell }
-    tab:set_title('Work')
-    left:split { direction = 'Right', size = 0.5, args = shell }
-    mux.set_active_workspace('main')
-  end
+  -- Defer the heavier work (session restore, pane splits) so the
+  -- GUI client does not time out parsing the initial server response.
+  wezterm.time.call_after(2, function()
+    local restored = do_restore_session(shell)
 
-  start_autosave()
+    if restored then
+      -- Session restore created proper workspaces; close the temp pane
+      -- only if we now have a non-'main' workspace, or if restore rebuilt 'main'.
+      -- The restore already set the active workspace.
+    else
+      -- No save file — add the second pane to make the default 2-pane layout
+      pcall(function() left:split { direction = 'Right', size = 0.5, args = shell } end)
+    end
+
+    start_autosave()
+  end)
 end)
 
 -- ============================================================
