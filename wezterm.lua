@@ -68,7 +68,6 @@ local sync_windows  = {}  -- reserved for future sync-mode extensions
 local sync_mode     = {}  -- window_id -> true when sync mode is active
 local git_branch_cache = {} -- cwd -> { branch, dirty, repo_root, expires }
 local readonly_panes = {} -- pane_id -> true for read-only panes
-local current_theme = {}    -- window_id -> 'NeonDark' or 'NeonLight'
 local prev_workspace = {}   -- window_id -> previous workspace name
 local last_known_workspace = {}  -- window_id -> for prev_workspace tracking
 
@@ -467,7 +466,26 @@ local function json_decode(s)
           pos = pos + 4
           local code = tonumber(hex, 16)
           if code then
-            if code < 0x80 then
+            -- Handle surrogate pairs (emoji and astral-plane characters)
+            if code >= 0xD800 and code <= 0xDBFF then
+              if s:sub(pos + 1, pos + 2) == '\\u' then
+                local hex2 = s:sub(pos + 3, pos + 6)
+                local lo = tonumber(hex2, 16)
+                pos = pos + 6
+                if lo and lo >= 0xDC00 and lo <= 0xDFFF then
+                  local cp = 0x10000 + (code - 0xD800) * 0x400 + (lo - 0xDC00)
+                  buf[#buf+1] = string.char(
+                    0xF0 + math.floor(cp / 0x40000),
+                    0x80 + math.floor((cp % 0x40000) / 0x1000),
+                    0x80 + math.floor((cp % 0x1000) / 0x40),
+                    0x80 + (cp % 0x40))
+                else
+                  buf[#buf+1] = '?'
+                end
+              else
+                buf[#buf+1] = '?'
+              end
+            elseif code < 0x80 then
               buf[#buf+1] = string.char(code)
             elseif code < 0x800 then
               buf[#buf+1] = string.char(0xC0 + math.floor(code / 64), 0x80 + (code % 64))
@@ -640,18 +658,16 @@ end
 -- ── Initialize session start time (survives config reloads) ──
 local function init_session_start()
   if session_start_time then return end
+  -- Read the startup lock written by is_duplicate_launch (do NOT write — that file
+  -- is owned by is_duplicate_launch and writing here causes a cold-start collision)
   local lock_path = wezterm.home_dir .. '\\.wezterm_startup.lock'
   local f = io.open(lock_path, 'r')
   if f then
     local ts = tonumber(f:read('*l') or '0') or 0
     f:close()
-    -- Only trust the lock timestamp if it's within 60s (same WezTerm launch)
     if ts > 0 and (os.time() - ts) < 60 then session_start_time = ts; return end
   end
   session_start_time = os.time()
-  -- Write fresh timestamp so config reloads within the same session reuse it
-  local wf = io.open(lock_path, 'w')
-  if wf then wf:write(tostring(session_start_time)); wf:close() end
 end
 init_session_start()
 
@@ -846,7 +862,6 @@ local function do_restore_session(shell, file_path)
       if path_exists(first_cwd) then
         spawn_args.cwd = first_cwd
       else
-        stats.invalid_cwds = stats.invalid_cwds + 1
         spawn_args.cwd = wezterm.home_dir
       end
     end
@@ -882,7 +897,6 @@ local function do_restore_session(shell, file_path)
         if path_exists(tab_cwd) then
           tab_args.cwd = tab_cwd
         else
-          stats.invalid_cwds = stats.invalid_cwds + 1
           tab_args.cwd = wezterm.home_dir
         end
       end
@@ -1292,7 +1306,9 @@ config.keys = {
   { key='$', mods='LEADER|SHIFT', action=act.PromptInputLine {
       description = 'Rename workspace:',
       action = wezterm.action_callback(function(_, _, line)
-        if line then mux.rename_workspace(mux.get_active_workspace(), line) end
+        if line and #line > 0 then
+          pcall(mux.rename_workspace, mux.get_active_workspace(), line)
+        end
       end),
   }},
   -- ── Enhancement 10: WORKSPACE DASHBOARD (LEADER+W) ───────────
@@ -1426,7 +1442,6 @@ config.keys = {
         overrides.window_frame = nil
       end
       window:set_config_overrides(overrides)
-      current_theme[window:window_id()] = next_theme
       pcall(function()
         window:toast_notification('WezTerm', 'Theme: ' .. next_theme, nil, 2000)
       end)
@@ -1897,7 +1912,8 @@ config.keys = {
       local cwd = pane:get_current_working_dir()
       local cwd_path = cwd and normalize_cwd(cwd) or nil
       local direction = (dims.cols > dims.viewport_rows * 2) and 'Right' or 'Bottom'
-      pane:split { direction = direction, cwd = cwd_path }
+      local ratio = get_split_ratio(direction)
+      pane:split { direction = direction, size = ratio, cwd = cwd_path }
   end)},
 
   -- ── Enhancement 5: PANE LABEL/ANNOTATION (LEADER+.) ─────────
