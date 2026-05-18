@@ -43,9 +43,18 @@
 --  Bell      : toast notification for bells in unfocused panes
 --  Notify    : toast when long-running cmd (>15s) completes in bg pane
 --  Sessions  : restore toast now shows workspace/tab/pane counts + invalid CWD count
+--  Templates : LEADER+Ctrl+T = save template   LEADER+Ctrl+Shift+T = restore template
+--  Logging   : LEADER+Shift+L = capture pane output to log file
+--  CheatSheet: LEADER+/ = fuzzy-searchable keybinding reference
+--  ConfigEdit: LEADER+Ctrl+E = open config in editor
+--  SendKeys  : LEADER+Shift+K = send command to specific pane (no focus switch)
+--  DeadPanes : LEADER+Ctrl+Q = auto-close all dead panes in active tab
+--  ScrollLock: LEADER+Shift+F = freeze/unfreeze pane view (process continues)
+--  WindowTitle: shows workspace › tab › process in title bar (ALT+TAB friendly)
+--  Tint      : per-workspace subtle background tint (4% accent blend)
 --  Status    : LEFT:  workspace [N/M] (accent color per workspace), WAIT, ZOOM, RESIZE, SYNC, RO,
---                      SAVED (green), ⏱Nm (orange, 5-15 min), STALE (red, >15 min), pane count
---              RIGHT: process, git branch + ✓ (clean) / ● (dirty), battery, clock
+--                      LOG, FREEZE, SAVED (green), ⏱Nm (orange, 5-15 min), STALE (red, >15 min), pane count
+--              RIGHT: uptime, process, git branch + ✓ (clean) / ● (dirty), battery, clock
 -- ============================================================
 
 local wezterm = require 'wezterm'
@@ -80,6 +89,15 @@ local prev_active_pane = nil  -- pane_id of previously active pane
 
 -- Enhancement 14: Split ratio memory (per-workspace)
 local split_ratios = {}  -- workspace -> { horizontal = 0.5, vertical = 0.5 }
+
+-- Enhancement 15: Pane output capture state (badge shows for 30s after capture)
+local logging_panes = {}  -- pane_id -> timestamp of last capture
+
+-- Enhancement 16: Frozen/scroll-locked panes
+local frozen_panes = {}  -- pane_id -> true
+
+-- Enhancement 17: Session start time (read from lock file to survive config reloads)
+local session_start_time = nil
 
 -- Enhancement 12: Dangerous paste patterns (checked by LEADER+V safe paste)
 local dangerous_paste_patterns = {
@@ -602,6 +620,49 @@ local function prune_named_sessions()
   end
 end
 
+-- ── Initialize session start time (survives config reloads) ──
+local function init_session_start()
+  if session_start_time then return end
+  local lock_path = wezterm.home_dir .. '\\.wezterm_startup.lock'
+  local f = io.open(lock_path, 'r')
+  if f then
+    local ts = tonumber(f:read('*l') or '0') or 0
+    f:close()
+    if ts > 0 then session_start_time = ts; return end
+  end
+  session_start_time = os.time()
+end
+init_session_start()
+
+-- ── List workspace template files ────────────────────────────
+local function list_template_files()
+  local templates = {}
+  local dir = (SESSION_DIR .. '/templates'):gsub('/', '\\')
+  local f = io.popen('cmd /c dir /b "' .. dir .. '\\*.json" 2>nul')
+  if not f then return templates end
+  for line in f:lines() do
+    line = line:gsub('%s+$', '')
+    local name = line:match('^(.+)%.json$')
+    if name then templates[#templates+1] = name end
+  end
+  f:close()
+  return templates
+end
+
+-- ── Hex color blend helper (for per-workspace background tint) ──
+local function hex_blend(base_hex, accent_hex, factor)
+  local function parse(h)
+    h = h:gsub('#', '')
+    return tonumber(h:sub(1,2), 16), tonumber(h:sub(3,4), 16), tonumber(h:sub(5,6), 16)
+  end
+  local br, bg, bb = parse(base_hex)
+  local ar, agr, ab = parse(accent_hex)
+  local r = math.floor(br + (ar - br) * factor)
+  local g = math.floor(bg + (agr - bg) * factor)
+  local b = math.floor(bb + (ab - bb) * factor)
+  return string.format('#%02x%02x%02x', r, g, b)
+end
+
 -- ── Save current session ──────────────────────────────────────
 -- dest_file: optional path; defaults to SESSION_FILE (last.json).
 -- Only the main slot (last.json) rotates prev.json and updates last_save_time.
@@ -1002,6 +1063,23 @@ local process_colors = {
   ['ssh']     = '#ff4466', ['python']  = '#4fc3f7', ['python3'] = '#4fc3f7',
   ['node']    = '#00ff88', ['docker']  = '#b48eff', ['cargo']   = '#ff9f00',
   ['go']      = '#00ffe1', ['ruby']    = '#ff00aa', ['java']    = '#ffe566',
+}
+
+-- ============================================================
+-- Enhancement: Keybinding Cheat Sheet data
+-- ============================================================
+local cheat_sheet = {
+  { id = 'nav',    label = '[Navigation]  ALT+hjkl=pane  LEADER+hjkl=pane  ALT+1-9=workspace  ALT+[/]=history  LEADER+;=last pane  LEADER+B=last workspace' },
+  { id = 'split',  label = '[Splits]  LEADER+|=right  LEADER+-=bottom  LEADER+Enter=smart  LEADER+Ctrl+Shift+R=set ratio' },
+  { id = 'pane',   label = '[Panes]  LEADER+z=zoom  LEADER+x=close  LEADER+o=select  LEADER+q=swap  LEADER+`=scratch  LEADER+.=label  LEADER+Shift+F=scroll lock' },
+  { id = 'tab',    label = '[Tabs]  LEADER+c=new  LEADER+n/p=next/prev  LEADER+1-9=jump  LEADER+<=>/>=reorder  LEADER+!=breakout  LEADER+,=rename' },
+  { id = 'ws',     label = '[Workspace]  LEADER+w=launcher  LEADER+W=dashboard  LEADER+$=rename  LEADER+P=project  LEADER+Shift+S=SSH' },
+  { id = 'sess',   label = '[Sessions]  LEADER+Ctrl+S=save  LEADER+Ctrl+R=restore  LEADER+Ctrl+N=named save  LEADER+Ctrl+L=named restore  LEADER+Ctrl+D=delete' },
+  { id = 'layout', label = '[Layouts]  LEADER+A=7-agent  LEADER+Shift+2=2-pane  Shift+3=3-pane  Shift+4=4-grid  Shift+5=sidebar' },
+  { id = 'bcast',  label = '[Broadcast]  LEADER+Ctrl+X=one-shot  LEADER+Ctrl+Y=sync mode  LEADER+Shift+K=send to pane' },
+  { id = 'copy',   label = '[Copy/Search]  LEADER+[=copy mode  LEADER+f=search  LEADER+Space=quick select  LEADER+u=URLs  LEADER+Shift+C=capture viewport' },
+  { id = 'misc',   label = '[Misc]  LEADER+Shift+T=theme  LEADER+Shift+O=opacity  LEADER+R=read-only  LEADER+V=safe paste  LEADER+r=reload  LEADER+Ctrl+E=edit config  LEADER+Ctrl+Q=close dead  LEADER+Shift+L=log pane' },
+  { id = 'templ',  label = '[Templates]  LEADER+Ctrl+T=save template  LEADER+Ctrl+Shift+T=restore template' },
 }
 
 -- ============================================================
@@ -1867,6 +1945,206 @@ config.keys = {
         end),
       }, pane)
   end)},
+
+  -- ── Enhancement 15: WORKSPACE TEMPLATE RESTORE (LEADER+Ctrl+Shift+T) ──
+  { key='T', mods='LEADER|CTRL|SHIFT', action=wezterm.action_callback(function(window, pane)
+      local templates = list_template_files()
+      if #templates == 0 then
+        pcall(function()
+          window:toast_notification('WezTerm Templates', 'No templates found. Save one with LEADER+Ctrl+T.', nil, 3000)
+        end)
+        return
+      end
+      local choices = {}
+      for _, name in ipairs(templates) do
+        choices[#choices+1] = { id = name, label = name }
+      end
+      window:perform_action(act.InputSelector {
+        title   = 'Restore Workspace Template',
+        choices = choices,
+        fuzzy   = true,
+        action  = wezterm.action_callback(function(w, _, id, _)
+          if id then
+            local shell = pwsh and { pwsh, '-NoLogo' } or { 'powershell.exe', '-NoLogo' }
+            local path  = SESSION_DIR .. '/templates/' .. id .. '.json'
+            local ok, stats = do_restore_session(shell, path)
+            pcall(function()
+              local msg = ok and ('Template "' .. id .. '" restored — '
+                .. (stats and (stats.workspaces .. ' ws, ' .. stats.tabs .. ' tabs, ' .. stats.panes .. ' panes') or ''))
+                or 'Template restore failed'
+              w:toast_notification('WezTerm Templates', msg, nil, 4000)
+            end)
+          end
+        end),
+      }, pane)
+  end)},
+
+  -- ── Enhancement 16: PANE OUTPUT CAPTURE TO FILE (LEADER+Shift+L) ──
+  { key='L', mods='LEADER|SHIFT', action=wezterm.action_callback(function(window, pane)
+      local pane_id = pane:pane_id()
+      local logs_dir = (SESSION_DIR .. '/logs'):gsub('/', '\\')
+      os.execute('cmd /c if not exist "' .. logs_dir .. '" mkdir "' .. logs_dir .. '" 2>nul')
+      local log_path = SESSION_DIR .. '/logs/pane_' .. pane_id .. '_' .. os.time() .. '.log'
+      local ok_cap, success_cap, stdout_cap = pcall(wezterm.run_child_process, {
+        'wezterm', 'cli', 'get-text', '--pane-id', tostring(pane_id),
+      })
+      if ok_cap and success_cap and stdout_cap and #stdout_cap > 0 then
+        local f = io.open(log_path, 'w')
+        if f then
+          f:write('-- Pane ' .. pane_id .. ' captured at ' .. os.date('%Y-%m-%d %H:%M:%S') .. '\n')
+          f:write(stdout_cap)
+          f:close()
+          logging_panes[pane_id] = os.time()
+          pcall(function()
+            window:toast_notification('WezTerm', 'Pane output saved to:\n' .. log_path, nil, 4000)
+          end)
+        end
+      else
+        pcall(function()
+          window:toast_notification('WezTerm', 'Failed to capture pane output', nil, 3000)
+        end)
+      end
+  end)},
+
+  -- ── Enhancement 17: KEYBINDING CHEAT SHEET (LEADER+/) ─────────
+  { key='/', mods='LEADER', action=wezterm.action_callback(function(window, pane)
+      window:perform_action(act.InputSelector {
+        title   = 'Keybinding Cheat Sheet (type to filter)',
+        choices = cheat_sheet,
+        fuzzy   = true,
+        action  = wezterm.action_callback(function(_, _, _, _) end),
+      }, pane)
+  end)},
+
+  -- ── Enhancement 18: QUICK CONFIG EDIT (LEADER+Ctrl+E) ─────────
+  { key='e', mods='LEADER|CTRL', action=wezterm.action_callback(function(window, _)
+      local config_path = wezterm.config_dir .. '/wezterm.lua'
+      local f = io.open(config_path, 'r')
+      if f then
+        f:close()
+        pcall(wezterm.open_with, config_path)
+      else
+        local fallback = wezterm.home_dir .. '/.wezterm.lua'
+        local f2 = io.open(fallback, 'r')
+        if f2 then f2:close() end
+        pcall(wezterm.open_with, f2 and fallback or config_path)
+      end
+      pcall(function()
+        window:toast_notification('WezTerm', 'Opening config in editor', nil, 2000)
+      end)
+  end)},
+
+  -- ── Enhancement 19: SEND-KEYS TO SPECIFIC PANE (LEADER+Shift+K) ──
+  { key='K', mods='LEADER|SHIFT', action=wezterm.action_callback(function(window, pane)
+      local tab = window:active_tab()
+      local panes = tab:panes_with_info()
+      if #panes < 2 then
+        pcall(function()
+          window:toast_notification('WezTerm', 'Only one pane in this tab', nil, 2000)
+        end)
+        return
+      end
+      local choices = {}
+      for _, pinfo in ipairs(panes) do
+        local pid = pinfo.pane:pane_id()
+        local proc = ''
+        local ok_p, p_name = pcall(function() return pinfo.pane:get_foreground_process_name() end)
+        if ok_p and p_name then proc = p_name:match('([^/\\]+)$') or '' end
+        local label_str = pane_labels[pid] and (' [' .. pane_labels[pid] .. ']') or ''
+        local marker = pinfo.is_active and '● ' or '  '
+        choices[#choices+1] = {
+          id    = tostring(pid),
+          label = marker .. 'Pane ' .. pinfo.index .. label_str .. '  (' .. proc .. ')',
+        }
+      end
+      window:perform_action(act.InputSelector {
+        title   = 'Send command to pane:',
+        choices = choices,
+        fuzzy   = true,
+        action  = wezterm.action_callback(function(w, p, id, _)
+          if id then
+            local target_id = tonumber(id)
+            w:perform_action(act.PromptInputLine {
+              description = 'Command to send (Enter to execute):',
+              action = wezterm.action_callback(function(w2, _, line)
+                if line and #line > 0 then
+                  local tab2 = w2:active_tab()
+                  local panes2 = tab2:panes_with_info()
+                  for _, pi in ipairs(panes2) do
+                    if pi.pane:pane_id() == target_id then
+                      pi.pane:send_text(line .. '\r')
+                      pcall(function()
+                        w2:toast_notification('WezTerm', 'Sent to pane ' .. target_id, nil, 2000)
+                      end)
+                      break
+                    end
+                  end
+                end
+              end),
+            }, p)
+          end
+        end),
+      }, pane)
+  end)},
+
+  -- ── Enhancement 20: AUTO-CLOSE DEAD PANES (LEADER+Ctrl+Q) ──────
+  { key='q', mods='LEADER|CTRL', action=wezterm.action_callback(function(window, _)
+      local tab = window:active_tab()
+      local ok_pi, panes_info = pcall(function() return tab:panes_with_info() end)
+      if not (ok_pi and panes_info) then return end
+      local dead_panes = {}
+      for _, pinfo in ipairs(panes_info) do
+        local ok_fp, fp = pcall(function() return pinfo.pane:get_foreground_process_name() end)
+        local proc_empty = (not ok_fp) or (not fp) or (#fp == 0)
+        if proc_empty then
+          local ok_pt, ptitle = pcall(function() return pinfo.pane:get_title() end)
+          if ok_pt and ptitle then
+            local lower_title = ptitle:lower()
+            if lower_title:find('completed') or lower_title:find('exited') then
+              dead_panes[#dead_panes+1] = pinfo.pane
+            end
+          end
+        end
+      end
+      if #dead_panes == 0 then
+        pcall(function()
+          window:toast_notification('WezTerm', 'No dead panes found', nil, 2000)
+        end)
+        return
+      end
+      local count = #dead_panes
+      for i, dp in ipairs(dead_panes) do
+        wezterm.time.call_after(0.2 * (i - 1), function()
+          pcall(function() dp:activate() end)
+          wezterm.time.call_after(0.05, function()
+            pcall(function()
+              window:perform_action(act.CloseCurrentPane { confirm = false }, dp)
+            end)
+          end)
+        end)
+      end
+      pcall(function()
+        window:toast_notification('WezTerm', 'Closing ' .. count .. ' dead pane(s)...', nil, 3000)
+      end)
+  end)},
+
+  -- ── Enhancement 21: PANE SCROLL LOCK / FREEZE (LEADER+Shift+F) ──
+  { key='F', mods='LEADER|SHIFT', action=wezterm.action_callback(function(window, pane)
+      local pid = pane:pane_id()
+      if frozen_panes[pid] then
+        frozen_panes[pid] = nil
+        window:perform_action(act.CopyMode 'Close', pane)
+        pcall(function()
+          window:toast_notification('WezTerm', 'Scroll lock OFF — pane ' .. pid, nil, 2000)
+        end)
+      else
+        frozen_panes[pid] = true
+        window:perform_action(act.ActivateCopyMode, pane)
+        pcall(function()
+          window:toast_notification('WezTerm', 'Scroll lock ON — pane ' .. pid .. ' (view frozen, process continues)', nil, 3000)
+        end)
+      end
+  end)},
 }
 
 -- ============================================================
@@ -1874,8 +2152,14 @@ config.keys = {
 -- ============================================================
 config.key_tables = {
   copy_mode = {
-    { key='q',        mods='NONE', action=act.CopyMode 'Close' },
-    { key='Escape',   mods='NONE', action=act.CopyMode 'Close' },
+    { key='q',        mods='NONE', action=wezterm.action_callback(function(window, pane)
+        frozen_panes[pane:pane_id()] = nil
+        window:perform_action(act.CopyMode 'Close', pane)
+    end)},
+    { key='Escape',   mods='NONE', action=wezterm.action_callback(function(window, pane)
+        frozen_panes[pane:pane_id()] = nil
+        window:perform_action(act.CopyMode 'Close', pane)
+    end)},
     { key='h',        mods='NONE', action=act.CopyMode 'MoveLeft'              },
     { key='j',        mods='NONE', action=act.CopyMode 'MoveDown'              },
     { key='k',        mods='NONE', action=act.CopyMode 'MoveUp'                },
@@ -1982,6 +2266,22 @@ wezterm.on('update-status', function(window, pane)
     overrides.enable_scroll_bar = nil
     overrides.window_padding    = nil
   end
+
+  -- Per-workspace background tint (subtle 4% blend of workspace accent color)
+  -- Skip tint when transparency/acrylic is active to avoid painting over compositor effect
+  local cur_opacity = overrides.window_background_opacity
+  if not cur_opacity or cur_opacity >= 1.0 then
+    local cur_scheme = overrides.color_scheme or 'NeonDark'
+    local base_bg = cur_scheme == 'NeonLight' and '#f5f5fa' or neon.bg
+    local accent = workspace_accent(current_ws)
+    local tinted_bg = hex_blend(base_bg, accent, 0.04)
+    overrides.background = {
+      { source = { Color = tinted_bg }, width = '100%', height = '100%' },
+    }
+  else
+    overrides.background = nil
+  end
+
   window:set_config_overrides(overrides)
 
   -- ── LEFT STATUS: workspace [N/M] + mode indicators + pane count ──
@@ -2052,6 +2352,29 @@ wezterm.on('update-status', function(window, pane)
       { Foreground = { Color = neon.black } },
       { Attribute  = { Intensity = 'Bold' } },
       { Text = '  RO  ' },
+    }
+  end
+
+  local capture_ts = logging_panes[pane:pane_id()]
+  if capture_ts then
+    if os.time() - capture_ts < 30 then
+      left[#left+1] = wezterm.format {
+        { Background = { Color = neon.blue  } },
+        { Foreground = { Color = neon.black } },
+        { Attribute  = { Intensity = 'Bold' } },
+        { Text = '  CAPTURED  ' },
+      }
+    else
+      logging_panes[pane:pane_id()] = nil
+    end
+  end
+
+  if frozen_panes[pane:pane_id()] then
+    left[#left+1] = wezterm.format {
+      { Background = { Color = neon.purple } },
+      { Foreground = { Color = neon.black  } },
+      { Attribute  = { Intensity = 'Bold'  } },
+      { Text = '  FREEZE  ' },
     }
   end
 
@@ -2138,8 +2461,20 @@ wezterm.on('update-status', function(window, pane)
 
   window:set_left_status(table.concat(left))
 
-  -- ── RIGHT STATUS: process, git, battery, clock ─────────────
+  -- ── RIGHT STATUS: uptime, process, git, battery, clock ──────
   local right = {}
+
+  if session_start_time then
+    local elapsed = os.time() - session_start_time
+    local hours   = math.floor(elapsed / 3600)
+    local mins    = math.floor((elapsed % 3600) / 60)
+    local uptime_str = hours > 0 and string.format('↑%dh %dm', hours, mins) or string.format('↑%dm', mins)
+    right[#right+1] = wezterm.format {
+      { Background = { Color = neon.bg_panel } },
+      { Foreground = { Color = neon.fg_dim   } },
+      { Text = '  ' .. uptime_str .. ' ' },
+    }
+  end
 
   local ok_proc, proc = pcall(function() return pane:get_foreground_process_name() end)
   if not ok_proc then proc = '' end
@@ -2248,6 +2583,28 @@ wezterm.on('format-tab-title', function(tab, _, _, _, _, max_width)
       { Text = label },
     }
   end
+end)
+
+-- ============================================================
+-- WINDOW TITLE — shows workspace › tab › process for ALT+TAB clarity
+-- ============================================================
+wezterm.on('format-window-title', function(tab, pane, tabs, _, _)
+  local ws = mux.get_active_workspace()
+  local tab_title = tab.active_pane.title or 'shell'
+  local proc = (tab.active_pane.foreground_process_name or ''):match('([^/\\]+)$') or ''
+
+  local zoom = ''
+  for _, p in ipairs(tab.panes) do
+    if p.is_zoomed then zoom = ' [Z]'; break end
+  end
+
+  local pane_count = #tab.panes > 1 and (' (' .. #tab.panes .. 'p)') or ''
+  local tab_count = #tabs > 1 and (' [' .. (tab.tab_index + 1) .. '/' .. #tabs .. ']') or ''
+
+  if proc ~= '' and proc ~= tab_title then
+    return ws .. ' › ' .. tab_title .. ' › ' .. proc .. zoom .. pane_count .. tab_count
+  end
+  return ws .. ' › ' .. tab_title .. zoom .. pane_count .. tab_count
 end)
 
 -- ============================================================

@@ -138,6 +138,16 @@ tmux requires WSL or Cygwin on Windows — it is a Linux tool bolted onto Window
 | Safe paste (dangerous-pattern check before paste) | No | **Yes** |
 | Near-instant tab title update on directory change | No | **Yes** |
 | Split ratio memory per workspace | No | **Yes** |
+| Workspace template restore picker | No | **Yes** |
+| Pane output capture to log file | No | **Yes** |
+| Window title shows workspace › tab › process | No | **Yes** |
+| Fuzzy keybinding cheat sheet | No | **Yes** |
+| Per-workspace background tint | No | **Yes** |
+| Quick config edit (one keybinding) | No | **Yes** |
+| Send command to specific pane without focus switch | No | **Yes** |
+| Session uptime in status bar | No | **Yes** |
+| Auto-close dead panes | No | **Yes** |
+| Pane scroll lock (freeze view, process continues) | No | **Yes** |
 
 ---
 
@@ -215,6 +225,8 @@ The status bar is split into two sides:
 | `RESIZE` | Orange | Resize mode active (h/j/k/l to resize, ESC to exit) |
 | `SYNC` | Red | Sync input mode active — every prompt line is sent to all panes |
 | `RO` | Red | Pane is marked read-only |
+| `CAPTURED` | Blue | Pane output was just captured to file (auto-clears after 30 s) |
+| `FREEZE` | Purple | Pane view is scroll-locked (process continues running) |
 | `SAVED` | Green | Session was saved (shows for 30 s) |
 | `⏱ Nm` | Orange | Session age 5–15 min since last save |
 | `STALE` | Red | Session age >15 min since last save |
@@ -226,6 +238,7 @@ The status bar is split into two sides:
 
 | Badge | Colour | Meaning |
 |-------|--------|---------|
+| Uptime `↑Xh Ym` | Dim | Session uptime since WezTerm started |
 | Process name | Color-coded by process | Foreground process — color varies: ssh=red, python=blue, node=green, docker=purple, cargo=orange, go=cyan, ruby=magenta, java=yellow; all others default to purple |
 | Branch name + `✓`/`●` | Yellow + Green/Red | Git branch — green `✓` when clean, red `●` when dirty (uncommitted changes) |
 | Battery | Green/Red | Battery level |
@@ -260,6 +273,8 @@ The leader key is **CTRL+B** — same as the tmux default.
 | `LEADER + o` | Visual pane picker with home-row letter labels (a/s/d/f/g/h/j/k/l) |
 | `LEADER + { / }` | Rotate panes |
 | `LEADER + R` | **Toggle read-only indicator** |
+| `LEADER + Shift+F` | **Scroll lock** — freeze pane view (enters copy mode); process continues in background; press again to unfreeze |
+| `LEADER + Ctrl+Q` | **Auto-close dead panes** — finds and closes all exited panes in the active tab |
 
 ### Layouts
 
@@ -277,6 +292,7 @@ The leader key is **CTRL+B** — same as the tmux default.
 |-----------|--------|
 | `LEADER + Ctrl+X` | Prompt for text and send it to **all panes** in the active tab (one-shot) |
 | `LEADER + Ctrl+Y` | **Toggle sync input mode** — each line you type is sent to ALL panes continuously; empty line or `LEADER+Ctrl+Y` again exits |
+| `LEADER + Shift+K` | **Send command to specific pane** — fuzzy-pick a pane, then enter a command; sent without switching focus |
 
 Useful with the 7-pane agent layout: run the same setup command across all agents simultaneously.
 
@@ -303,6 +319,7 @@ Useful with the 7-pane agent layout: run the same setup command across all agent
 | `LEADER + $` | Rename current workspace |
 | `LEADER + B` | **Toggle last workspace** (like tmux prefix+L) |
 | `LEADER + Ctrl+T` | **Save workspace template** — prompt for a name and save the current layout as a reusable template |
+| `LEADER + Ctrl+Shift+T` | **Restore workspace template** — fuzzy-pick from saved templates and restore the layout |
 | `LEADER + P` | **Project launcher** — fuzzy-pick from project dirs, spawn workspace |
 | `ALT + 1–9` | **Switch to workspace by index (sorted A-Z)** |
 | `LEADER + D` | Connect to SSH domain |
@@ -366,6 +383,9 @@ Enter with `LEADER + [`, exit with `q` or `Esc`.
 | `LEADER + Space` | Quick select any text pattern (URLs, file paths, git hashes, IPs, UUIDs, Docker container IDs) |
 | `LEADER + u` | Quick select URL and open in browser |
 | `LEADER + ?` | Show all key assignments |
+| `LEADER + /` | **Keybinding cheat sheet** — fuzzy-searchable reference of all keybindings grouped by category |
+| `LEADER + Ctrl+E` | **Quick config edit** — open `wezterm.lua` in your system editor |
+| `LEADER + Shift+L` | **Capture pane output** — save viewport text to a timestamped log file |
 
 ### Tab Titles
 
@@ -550,7 +570,7 @@ Each subdirectory of these paths becomes a selectable project. The spawned works
 
 ## Workspace Templates
 
-Press **LEADER + Ctrl+T** to save the current workspace layout (tab count, pane splits, working directories) as a named template. Templates are stored in `%USERPROFILE%\.wezterm_sessions\templates\` as JSON files.
+Press **LEADER + Ctrl+T** to save the current workspace layout (tab count, pane splits, working directories) as a named template. Press **LEADER + Ctrl+Shift+T** to fuzzy-pick from saved templates and restore one. Templates are stored in `%USERPROFILE%\.wezterm_sessions\templates\` as JSON files.
 
 Templates complement named sessions: a named session captures a snapshot of a running workspace at a point in time, while a template defines a reusable skeleton layout you can apply to new workspaces at any time.
 
