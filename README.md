@@ -324,7 +324,7 @@ Useful with the 7-pane agent layout: run the same setup command across all agent
 | `ALT + 1–9` | **Switch to workspace by index (sorted A-Z)** |
 | `LEADER + D` | Connect to SSH domain |
 | `LEADER + Shift+S` | **Dynamic SSH host picker** — fuzzy-pick from `~/.ssh/config` Host entries; opens SSH in a split pane |
-| `LEADER + d` | **Quit WezTerm** — closes the application (save session first with LEADER+Ctrl+S) |
+| `LEADER + d` | **Quit WezTerm** — auto-saves session, then prompts for confirmation before exiting |
 
 ### Session Save & Restore (tmux-resurrect style)
 
@@ -391,7 +391,7 @@ Enter with `LEADER + [`, exit with `q` or `Esc`.
 
 Tab titles automatically show the **git repository root name** when inside a git repository, or the **CWD basename** otherwise. When running a named process (like `vim`, `node`, `python`), the process name is shown instead. This means all panes inside the same repo (even in subdirectories) share the repo name as their tab title, making multi-project workflows much easier to navigate visually.
 
-Git info is cached for **5 seconds** per directory, so tab titles update within 5 seconds of changing into a new directory — near-instant without hammering `git` on every repaint. Shells that send the OSC 7 `cwd_notify` escape sequence trigger an immediate cache invalidation, making updates instantaneous.
+Git info is cached for **30 seconds** per directory to avoid blocking the render thread with synchronous git subprocess calls. Shells that send the OSC 7 `cwd_notify` escape sequence trigger an immediate cache invalidation, making updates instantaneous on directory change.
 
 ---
 
@@ -476,7 +476,7 @@ WezTerm includes a built-in workspace system for organising your terminal sessio
 | Say **Yes** to "kill all panes?" | Processes are killed, session is gone | No |
 | `CTRL+D` in a shell | Exits that shell, closes that pane only | That pane lost |
 
-**Rule of thumb:** Press `LEADER + Ctrl+S` before closing WezTerm to make sure your workspace layout is saved. Auto-save runs every 15 minutes, but a manual save guarantees nothing is lost.
+**Rule of thumb:** Use `LEADER + d` to quit — it auto-saves the session and prompts for confirmation. Auto-save runs every 15 minutes, but quitting via `LEADER + d` guarantees nothing is lost.
 
 ### Session Persistence FAQ
 
@@ -815,7 +815,7 @@ wsl --install
 
 **Git branch not showing in status bar**
 
-The status bar queries `git` in the background for the active pane's directory. If git is not in PATH or the directory is not a git repo, the branch segment is hidden. Results are cached for 5 seconds per directory to balance freshness with performance.
+The status bar queries `git` in the background for the active pane's directory. If git is not in PATH or the directory is not a git repo, the branch segment is hidden. Results are cached for 30 seconds per directory to avoid render-thread stalls; cache is invalidated instantly when your shell sends the OSC 7 cwd_notify escape on directory change.
 
 ---
 

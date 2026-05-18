@@ -68,15 +68,15 @@ local sync_windows  = {}  -- reserved for future sync-mode extensions
 local sync_mode     = {}  -- window_id -> true when sync mode is active
 local git_branch_cache = {} -- cwd -> { branch, dirty, repo_root, expires }
 local readonly_panes = {} -- pane_id -> true for read-only panes
-local current_theme = 'NeonDark' -- toggles between NeonDark / NeonLight
-local prev_workspace = nil -- Enhancement: last-workspace toggle
-local last_known_workspace = nil  -- for prev_workspace tracking
+local current_theme = {}    -- window_id -> 'NeonDark' or 'NeonLight'
+local prev_workspace = {}   -- window_id -> previous workspace name
+local last_known_workspace = {}  -- window_id -> for prev_workspace tracking
 
--- Pane history navigation state
-local pane_history     = {}      -- stack of pane_ids
-local pane_history_pos = 0       -- current position in stack
+-- Pane history navigation state (keyed by window_id for isolation)
+local pane_history     = {}      -- window_id -> stack of pane_ids
+local pane_history_pos = {}      -- window_id -> current position in stack
 local MAX_PANE_HISTORY = 20
-local last_tracked_pane = nil    -- to detect changes
+local last_tracked_pane = {}     -- window_id -> last pane_id
 
 -- Enhancement 1: Floating/Scratch Pane state
 local scratch_pane = {}  -- window_id -> pane_id
@@ -84,8 +84,8 @@ local scratch_pane = {}  -- window_id -> pane_id
 -- Enhancement 5: Per-Pane Labels state
 local pane_labels = {}  -- pane_id -> label string
 
--- Enhancement 7: Last-Pane Toggle state
-local prev_active_pane = nil  -- pane_id of previously active pane
+-- Enhancement 7: Last-Pane Toggle state (keyed by window_id for isolation)
+local prev_active_pane = {}  -- window_id -> pane_id of previously active pane
 
 -- Enhancement 14: Split ratio memory (per-workspace)
 local split_ratios = {}  -- workspace -> { horizontal = 0.5, vertical = 0.5 }
@@ -434,7 +434,7 @@ local function json_encode(v)
     else
       local items = {}
       for k, val in pairs(v) do
-        items[#items+1] = '"' .. tostring(k) .. '":' .. json_encode(val)
+        items[#items+1] = json_encode(tostring(k)) .. ':' .. json_encode(val)
       end
       return '{' .. table.concat(items, ',') .. '}'
     end
@@ -462,8 +462,25 @@ local function json_decode(s)
       if c == '\\' then
         pos = pos + 1
         c = s:sub(pos, pos)
-        local esc = { ['"']='"', ['\\']='\\', ['/']='/',  n='\n', r='\r', t='\t', b='\b', f='\f' }
-        buf[#buf+1] = esc[c] or c
+        if c == 'u' then
+          local hex = s:sub(pos + 1, pos + 4)
+          pos = pos + 4
+          local code = tonumber(hex, 16)
+          if code then
+            if code < 0x80 then
+              buf[#buf+1] = string.char(code)
+            elseif code < 0x800 then
+              buf[#buf+1] = string.char(0xC0 + math.floor(code / 64), 0x80 + (code % 64))
+            else
+              buf[#buf+1] = string.char(0xE0 + math.floor(code / 4096), 0x80 + math.floor((code % 4096) / 64), 0x80 + (code % 64))
+            end
+          else
+            buf[#buf+1] = '?'
+          end
+        else
+          local esc = { ['"']='"', ['\\']='\\', ['/']='/',  n='\n', r='\r', t='\t', b='\b', f='\f' }
+          buf[#buf+1] = esc[c] or c
+        end
       else
         buf[#buf+1] = c
       end
@@ -603,19 +620,19 @@ local MAX_NAMED_SESSIONS = 20
 local function prune_named_sessions()
   local dir = SESSION_DIR:gsub('/', '\\')
   local entries = {}
-  local f = io.popen('cmd /c forfiles /P "' .. dir .. '" /M *.json /C "cmd /c echo @fname @fdate @ftime" 2>nul')
+  local f = io.popen('cmd /c dir /b /o-d "' .. dir .. '\\*.json" 2>nul')
   if not f then return end
   for line in f:lines() do
-    local name = line:match('^(%S+)')
+    line = line:gsub('%s+$', '')
+    local name = line:match('^(.+)%.json$')
     if name and name ~= 'last' and name ~= 'prev' then
-      entries[#entries+1] = { name = name, line = line }
+      entries[#entries+1] = name
     end
   end
   f:close()
   if #entries <= MAX_NAMED_SESSIONS then return end
-  table.sort(entries, function(a, b) return a.line > b.line end)
   for i = MAX_NAMED_SESSIONS + 1, #entries do
-    local path = SESSION_DIR .. '/' .. entries[i].name .. '.json'
+    local path = SESSION_DIR .. '/' .. entries[i] .. '.json'
     pcall(os.remove, path)
   end
 end
@@ -628,9 +645,13 @@ local function init_session_start()
   if f then
     local ts = tonumber(f:read('*l') or '0') or 0
     f:close()
-    if ts > 0 then session_start_time = ts; return end
+    -- Only trust the lock timestamp if it's within 60s (same WezTerm launch)
+    if ts > 0 and (os.time() - ts) < 60 then session_start_time = ts; return end
   end
   session_start_time = os.time()
+  -- Write fresh timestamp so config reloads within the same session reuse it
+  local wf = io.open(lock_path, 'w')
+  if wf then wf:write(tostring(session_start_time)); wf:close() end
 end
 init_session_start()
 
@@ -821,7 +842,14 @@ local function do_restore_session(shell, file_path)
     end
 
     local spawn_args = { workspace = ws.name, args = shell }
-    if #first_cwd > 0 then spawn_args.cwd = first_cwd end
+    if #first_cwd > 0 then
+      if path_exists(first_cwd) then
+        spawn_args.cwd = first_cwd
+      else
+        stats.invalid_cwds = stats.invalid_cwds + 1
+        spawn_args.cwd = wezterm.home_dir
+      end
+    end
 
     local ok_spawn, tab, first_pane, window = pcall(function()
       return mux.spawn_window(spawn_args)
@@ -850,7 +878,14 @@ local function do_restore_session(shell, file_path)
       end
 
       local tab_args = { args = shell }
-      if #tab_cwd > 0 then tab_args.cwd = tab_cwd end
+      if #tab_cwd > 0 then
+        if path_exists(tab_cwd) then
+          tab_args.cwd = tab_cwd
+        else
+          stats.invalid_cwds = stats.invalid_cwds + 1
+          tab_args.cwd = wezterm.home_dir
+        end
+      end
 
       local ok_t, new_tab, new_pane = pcall(function()
         return window:spawn_tab(tab_args)
@@ -918,42 +953,39 @@ local function get_git_info(cwd)
   for _ in pairs(git_branch_cache) do cache_size = cache_size + 1 end
   if cache_size > 200 then git_branch_cache = {} end
 
-  -- Step 1: get branch name
-  local branch = nil
+  -- Single combined git call: branch + toplevel in one process (saves ~100ms on Windows)
+  local branch    = nil
+  local repo_root = nil
   local ok1, success1, stdout1 = pcall(wezterm.run_child_process, {
-    'git', '-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD',
+    'git', '-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD', '--show-toplevel',
   })
   if ok1 and success1 and stdout1 then
-    local b = stdout1:gsub('%s+$', '')
-    if #b > 0 and b ~= 'HEAD' then branch = b end
-  end
-
-  local dirty     = false
-  local repo_root = nil
-
-  if branch then
-    -- Step 2: dirty status (only run when we know we're in a git repo)
-    local ok2, success2, stdout2 = pcall(wezterm.run_child_process, {
-      'git', '-C', cwd, 'status', '--porcelain',
-    })
-    if ok2 and success2 and stdout2 then
-      dirty = (#stdout2:gsub('%s+$', '') > 0)
+    local lines = {}
+    for line in stdout1:gmatch('[^\r\n]+') do lines[#lines+1] = line end
+    if lines[1] then
+      local b = lines[1]:gsub('%s+$', '')
+      if #b > 0 and b ~= 'HEAD' then branch = b end
     end
-
-    -- Step 3: repo root basename (for smart tab titles — Enhancement 8)
-    local ok3, success3, stdout3 = pcall(wezterm.run_child_process, {
-      'git', '-C', cwd, 'rev-parse', '--show-toplevel',
-    })
-    if ok3 and success3 and stdout3 then
-      local root = stdout3:gsub('%s+$', '')
-      -- Normalize: git outputs Unix-style /C:/... paths on Windows
+    if lines[2] then
+      local root = lines[2]:gsub('%s+$', '')
       root = root:gsub('^/([A-Za-z]:)', '%1')
       if #root > 0 then repo_root = root end
     end
   end
 
-  -- Enhancement 13: reduced TTL (5s) for faster tab-title updates on directory change
-  local info = { branch = branch, dirty = dirty, repo_root = repo_root, expires = now + 5 }
+  local dirty = false
+  if branch then
+    -- Dirty check: use --no-optional-locks to avoid contention, -uno to skip untracked
+    local ok2, success2, stdout2 = pcall(wezterm.run_child_process, {
+      'git', '--no-optional-locks', '-C', cwd, 'status', '--porcelain', '-uno',
+    })
+    if ok2 and success2 and stdout2 then
+      dirty = (#stdout2:gsub('%s+$', '') > 0)
+    end
+  end
+
+  -- 30s TTL reduces render-thread git spawns; cwd_notify invalidation handles fast updates
+  local info = { branch = branch, dirty = dirty, repo_root = repo_root, expires = now + 30 }
   git_branch_cache[cwd] = info
   return info
 end
@@ -1019,7 +1051,14 @@ local PROJECT_DIRS = {
   wezterm.home_dir .. '/repos',
 }
 
+local project_cache = { data = nil, expires = 0 }
+
 local function scan_project_dirs()
+  local now = os.time()
+  if project_cache.data and project_cache.expires > now then
+    return project_cache.data
+  end
+
   local projects = {}
   for _, base in ipairs(PROJECT_DIRS) do
     local norm = base:gsub('/', '\\')
@@ -1035,6 +1074,9 @@ local function scan_project_dirs()
       end
     end
   end
+
+  project_cache.data = projects
+  project_cache.expires = now + 60
   return projects
 end
 
@@ -1078,7 +1120,7 @@ local cheat_sheet = {
   { id = 'layout', label = '[Layouts]  LEADER+A=7-agent  LEADER+Shift+2=2-pane  Shift+3=3-pane  Shift+4=4-grid  Shift+5=sidebar' },
   { id = 'bcast',  label = '[Broadcast]  LEADER+Ctrl+X=one-shot  LEADER+Ctrl+Y=sync mode  LEADER+Shift+K=send to pane' },
   { id = 'copy',   label = '[Copy/Search]  LEADER+[=copy mode  LEADER+f=search  LEADER+Space=quick select  LEADER+u=URLs  LEADER+Shift+C=capture viewport' },
-  { id = 'misc',   label = '[Misc]  LEADER+Shift+T=theme  LEADER+Shift+O=opacity  LEADER+R=read-only  LEADER+V=safe paste  LEADER+r=reload  LEADER+Ctrl+E=edit config  LEADER+Ctrl+Q=close dead  LEADER+Shift+L=log pane' },
+  { id = 'misc',   label = '[Misc]  LEADER+Shift+T=theme  LEADER+Shift+O=opacity  LEADER+R=read-only indicator  LEADER+V=safe paste  LEADER+r=reload  LEADER+Ctrl+E=edit config  LEADER+Ctrl+Q=close dead  LEADER+Shift+L=log pane  LEADER+d=quit (saves first)' },
   { id = 'templ',  label = '[Templates]  LEADER+Ctrl+T=save template  LEADER+Ctrl+Shift+T=restore template' },
 }
 
@@ -1300,12 +1342,13 @@ config.keys = {
 
   -- ── LAST WORKSPACE TOGGLE (like tmux prefix+L) ────────────
   { key='B', mods='LEADER', action=wezterm.action_callback(function(window, _)
-      if prev_workspace then
+      local wid = window:window_id()
+      if prev_workspace[wid] then
         local cur = mux.get_active_workspace()
-        if prev_workspace ~= cur then
-          local target = prev_workspace
-          prev_workspace = cur
-          last_known_workspace = target
+        if prev_workspace[wid] ~= cur then
+          local target = prev_workspace[wid]
+          prev_workspace[wid] = cur
+          last_known_workspace[wid] = target
           mux.set_active_workspace(target)
         end
       else
@@ -1383,7 +1426,7 @@ config.keys = {
         overrides.window_frame = nil
       end
       window:set_config_overrides(overrides)
-      current_theme = next_theme
+      current_theme[window:window_id()] = next_theme
       pcall(function()
         window:toast_notification('WezTerm', 'Theme: ' .. next_theme, nil, 2000)
       end)
@@ -1613,8 +1656,18 @@ config.keys = {
       end
   end)},
 
-  -- ── DETACH  (tmux LEADER+d) ─────────────────────────────────
-  { key='d', mods='LEADER', action=act.QuitApplication },
+  -- ── DETACH / QUIT  (tmux LEADER+d — note: WezTerm has no detach, this quits) ──
+  { key='d', mods='LEADER', action=wezterm.action_callback(function(window, pane)
+      do_save_session()
+      window:perform_action(act.PromptInputLine {
+        description = 'Quit WezTerm? Session auto-saved. Type "yes" to exit:',
+        action = wezterm.action_callback(function(w, _, line)
+          if line and line:lower() == 'yes' then
+            w:perform_action(act.QuitApplication, pane)
+          end
+        end),
+      }, pane)
+  end)},
 
   -- ── SCROLLBACK IN EDITOR  (Enhancement 9) ───────────────────
   -- LEADER + e  →  open current selection (or try viewport) in $EDITOR
@@ -1738,12 +1791,16 @@ config.keys = {
   }},
 
   -- ── PANE HISTORY NAV  (Enhancement 4) ────────────────────────
-  -- ALT+[  →  pane history back
+  -- ALT+[  →  pane history back (per-window)
   { key='[', mods='ALT', action=wezterm.action_callback(function(window, _)
-      if pane_history_pos > 1 then
-        pane_history_pos = pane_history_pos - 1
-        local target_id = pane_history[pane_history_pos]
-        last_tracked_pane = target_id  -- prevent re-push
+      local wid = window:window_id()
+      local hist = pane_history[wid]
+      local pos  = pane_history_pos[wid]
+      if hist and pos and pos > 1 then
+        pos = pos - 1
+        pane_history_pos[wid] = pos
+        local target_id = hist[pos]
+        last_tracked_pane[wid] = target_id
         local tab = window:active_tab()
         local panes = tab:panes_with_info()
         for _, pinfo in ipairs(panes) do
@@ -1754,12 +1811,16 @@ config.keys = {
         end
       end
   end)},
-  -- ALT+]  →  pane history forward
+  -- ALT+]  →  pane history forward (per-window)
   { key=']', mods='ALT', action=wezterm.action_callback(function(window, _)
-      if pane_history_pos < #pane_history then
-        pane_history_pos = pane_history_pos + 1
-        local target_id = pane_history[pane_history_pos]
-        last_tracked_pane = target_id  -- prevent re-push
+      local wid = window:window_id()
+      local hist = pane_history[wid]
+      local pos  = pane_history_pos[wid]
+      if hist and pos and pos < #hist then
+        pos = pos + 1
+        pane_history_pos[wid] = pos
+        local target_id = hist[pos]
+        last_tracked_pane[wid] = target_id
         local tab = window:active_tab()
         local panes = tab:panes_with_info()
         for _, pinfo in ipairs(panes) do
@@ -1776,7 +1837,6 @@ config.keys = {
       local wid = window:window_id()
       local existing_id = scratch_pane[wid]
       if existing_id then
-        -- Search ALL tabs in this window (not just active) to find the scratch pane
         local found = false
         local ok_mux, mux_win = pcall(function() return window:mux_window() end)
         if ok_mux and mux_win then
@@ -1789,7 +1849,7 @@ config.keys = {
                   if pinfo.pane:pane_id() == existing_id then
                     found = true
                     pinfo.pane:activate()
-                    pinfo.pane:send_text('exit\r')
+                    window:perform_action(act.CloseCurrentPane { confirm = false }, pinfo.pane)
                     break
                   end
                 end
@@ -1856,11 +1916,12 @@ config.keys = {
 
   -- ── Enhancement 7: LAST-PANE TOGGLE (LEADER+;) ───────────────
   { key=';', mods='LEADER', action=wezterm.action_callback(function(window, _)
-      if prev_active_pane then
+      local wid = window:window_id()
+      if prev_active_pane[wid] then
         local tab = window:active_tab()
         local panes = tab:panes_with_info()
         for _, pinfo in ipairs(panes) do
-          if pinfo.pane:pane_id() == prev_active_pane then
+          if pinfo.pane:pane_id() == prev_active_pane[wid] then
             pinfo.pane:activate()
             break
           end
@@ -2169,7 +2230,7 @@ config.key_tables = {
     { key='e',        mods='NONE', action=act.CopyMode 'MoveForwardWordEnd'    },
     { key='0',        mods='NONE', action=act.CopyMode 'MoveToStartOfLine'              },
     { key='^',        mods='SHIFT',action=act.CopyMode 'MoveToStartOfLineContent'      },
-    { key='$',        mods='NONE', action=act.CopyMode 'MoveToEndOfLineContent'        },
+    { key='$',        mods='SHIFT',action=act.CopyMode 'MoveToEndOfLineContent'        },
     { key='H',        mods='NONE', action=act.CopyMode 'MoveToViewportTop'             },
     { key='M',        mods='NONE', action=act.CopyMode 'MoveToViewportMiddle'          },
     { key='L',        mods='NONE', action=act.CopyMode 'MoveToViewportBottom'          },
@@ -2224,36 +2285,37 @@ config.key_tables = {
 -- ============================================================
 
 wezterm.on('update-status', function(window, pane)
-  -- Track workspace changes for last-workspace toggle
+  local wid = window:window_id()
+
+  -- Track workspace changes for last-workspace toggle (per-window)
   local current_ws = mux.get_active_workspace()
-  if last_known_workspace and current_ws ~= last_known_workspace then
-    prev_workspace = last_known_workspace
+  if last_known_workspace[wid] and current_ws ~= last_known_workspace[wid] then
+    prev_workspace[wid] = last_known_workspace[wid]
   end
-  last_known_workspace = current_ws
+  last_known_workspace[wid] = current_ws
 
   -- Track pane focus for history navigation (Enhancement 4) and last-pane toggle (Enhancement 7)
   local current_pane_id = pane:pane_id()
-  if current_pane_id ~= last_tracked_pane then
-    if last_tracked_pane == nil then
-      -- First pane ever tracked — seed the history
-      pane_history[1] = current_pane_id
-      pane_history_pos = 1
+  if current_pane_id ~= last_tracked_pane[wid] then
+    if not pane_history[wid] then
+      pane_history[wid] = { current_pane_id }
+      pane_history_pos[wid] = 1
     else
-      -- Enhancement 7: record the pane that was active before this one
-      prev_active_pane = last_tracked_pane
-      -- Trim forward history when navigating normally (not via back/forward)
-      if pane_history_pos < #pane_history then
-        for i = #pane_history, pane_history_pos + 1, -1 do
-          table.remove(pane_history, i)
+      prev_active_pane[wid] = last_tracked_pane[wid]
+      local hist = pane_history[wid]
+      local pos  = pane_history_pos[wid] or #hist
+      if pos < #hist then
+        for i = #hist, pos + 1, -1 do
+          table.remove(hist, i)
         end
       end
-      pane_history[#pane_history + 1] = current_pane_id
-      if #pane_history > MAX_PANE_HISTORY then
-        table.remove(pane_history, 1)
+      hist[#hist + 1] = current_pane_id
+      if #hist > MAX_PANE_HISTORY then
+        table.remove(hist, 1)
       end
-      pane_history_pos = #pane_history
+      pane_history_pos[wid] = #hist
     end
-    last_tracked_pane = current_pane_id
+    last_tracked_pane[wid] = current_pane_id
   end
 
   -- Smart scrollbar: hide in alternate screen (vim, htop, etc.), reclaim right padding
@@ -2608,6 +2670,38 @@ wezterm.on('format-window-title', function(tab, pane, tabs, _, _)
 end)
 
 -- ============================================================
+-- PANE CLOSE CLEANUP — garbage-collect stale per-pane state maps
+-- ============================================================
+wezterm.on('pane-focus-changed', function(window, _)
+  local live_ids = {}
+  local ok_mux, mux_win = pcall(function() return window:mux_window() end)
+  if ok_mux and mux_win then
+    local ok_tabs, tabs = pcall(function() return mux_win:tabs() end)
+    if ok_tabs and tabs then
+      for _, t in ipairs(tabs) do
+        local ok_p, ps = pcall(function() return t:panes() end)
+        if ok_p and ps then
+          for _, p in ipairs(ps) do live_ids[p:pane_id()] = true end
+        end
+      end
+    end
+  end
+  if not next(live_ids) then return end
+  for pid, _ in pairs(pane_labels) do
+    if not live_ids[pid] then pane_labels[pid] = nil end
+  end
+  for pid, _ in pairs(readonly_panes) do
+    if not live_ids[pid] then readonly_panes[pid] = nil end
+  end
+  for pid, _ in pairs(frozen_panes) do
+    if not live_ids[pid] then frozen_panes[pid] = nil end
+  end
+  for pid, _ in pairs(logging_panes) do
+    if not live_ids[pid] then logging_panes[pid] = nil end
+  end
+end)
+
+-- ============================================================
 -- BELL NOTIFICATION — toast when a bell rings in an unfocused pane
 -- To trigger on command completion, add to your PowerShell profile:
 --   function prompt { [char]7 + "PS $($PWD.Path)> " }
@@ -2814,8 +2908,6 @@ config.prefer_egl                               = true  -- prefer EGL over WGL; 
 config.inactive_pane_hsb = { saturation = 0.85, brightness = 0.7 }
 
 config.automatically_reload_config              = true
-config.check_for_updates                        = true
-config.check_for_updates_interval_seconds       = 86400
 config.exit_behavior                            = 'CloseOnCleanExit'
 config.exit_behavior_messaging                  = 'Verbose'
 config.selection_word_boundary                  = ' \t\n{}[]()"\''
