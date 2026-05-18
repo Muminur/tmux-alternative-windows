@@ -224,7 +224,7 @@ The status bar is split into two sides:
 | `ZOOM` | Yellow | A pane is zoomed fullscreen |
 | `RESIZE` | Orange | Resize mode active (h/j/k/l to resize, ESC to exit) |
 | `SYNC` | Red | Sync input mode active — every prompt line is sent to all panes |
-| `RO` | Red | Pane is marked read-only |
+| `RO` | Red | Pane is marked read-only (visual indicator only — does not block input) |
 | `CAPTURED` | Blue | Pane output was just captured to file (auto-clears after 30 s) |
 | `FREEZE` | Purple | Pane view is scroll-locked (process continues running) |
 | `SAVED` | Green | Session was saved (shows for 30 s) |
@@ -256,7 +256,7 @@ The leader key is **CTRL+B** — same as the tmux default.
 |-----------|--------|
 | `LEADER + \|` or `%` | Split pane right (inherits cwd; uses remembered split ratio) |
 | `LEADER + -` or `"` | Split pane down (inherits cwd; uses remembered split ratio) |
-| `LEADER + Enter` | **Smart split** — auto-picks right or bottom based on pane dimensions |
+| `LEADER + Enter` | **Smart split** — auto-picks right or bottom based on pane dimensions; uses remembered split ratio |
 | `LEADER + backtick` | **Floating/scratch pane** — toggle a 20% bottom split for quick commands; re-pressing closes it |
 | `ALT + h/j/k/l` | **Navigate panes instantly (no leader)** |
 | `ALT + Arrow keys` | **Navigate panes instantly (no leader)** |
@@ -272,7 +272,7 @@ The leader key is **CTRL+B** — same as the tmux default.
 | `LEADER + .` | **Set pane label** — annotate the active pane; label appears in the status bar |
 | `LEADER + o` | Visual pane picker with home-row letter labels (a/s/d/f/g/h/j/k/l) |
 | `LEADER + { / }` | Rotate panes |
-| `LEADER + R` | **Toggle read-only indicator** |
+| `LEADER + R` | **Toggle read-only indicator** (visual badge only — does not block input) |
 | `LEADER + Shift+F` | **Scroll lock** — freeze pane view (enters copy mode); process continues in background; press again to unfreeze |
 | `LEADER + Ctrl+Q` | **Auto-close dead panes** — finds and closes all exited panes in the active tab |
 
@@ -375,8 +375,8 @@ Enter with `LEADER + [`, exit with `q` or `Esc`.
 | `LEADER + :` | **Command palette** (search all actions) |
 | `LEADER + Shift+T` | **Toggle NeonDark ↔ NeonLight theme** |
 | `LEADER + Shift+O` | **Toggle window opacity** — switch between solid (1.0) and transparent (0.85 + Acrylic blur) |
-| `ALT + [` | **Pane history back** — jump to previously focused pane (20-entry stack) |
-| `ALT + ]` | **Pane history forward** — jump forward through pane history |
+| `ALT + [` | **Pane history back** — jump to previously focused pane (20-entry stack, per-window) |
+| `ALT + ]` | **Pane history forward** — jump forward through pane history (per-window) |
 | `LEADER + r` | Reload config without restart |
 | `LEADER + e` | Open current selection (or viewport) in `$EDITOR` |
 | `LEADER + f` | Search scrollback buffer |
@@ -471,6 +471,7 @@ WezTerm includes a built-in workspace system for organising your terminal sessio
 
 | Action | What happens | Session preserved? |
 |--------|-------------|-------------------|
+| `LEADER + d` (recommended) | Auto-saves session, then prompts for confirmation | **Yes** |
 | Close the WezTerm **window** (X button / Alt+F4) | WezTerm exits completely | Only if saved to disk |
 | Open WezTerm again | Auto-restores from last save file | Yes (from last auto-save or manual save) |
 | Say **Yes** to "kill all panes?" | Processes are killed, session is gone | No |
