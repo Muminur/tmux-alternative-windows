@@ -3,7 +3,11 @@ CLAUDE.md
 .omc/
 .serena/
 planning.md
+PLAN.md
 tasks.md
+TASKS.md
+prd.md
+PRD.md
 lessons.md
 *.docx
 .env
