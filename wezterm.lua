@@ -1732,6 +1732,19 @@ config.keys = {
   -- ── CLIPBOARD ───────────────────────────────────────────────
   { key='c', mods='CTRL|SHIFT', action=act.CopyTo 'Clipboard' },
   { key='v', mods='CTRL|SHIFT', action=act.PasteFrom 'Clipboard' },
+  -- Plain Ctrl+V pastes (works with Beeftext combos that send Ctrl+V)
+  { key='v', mods='CTRL', action=act.PasteFrom 'Clipboard' },
+  -- Plain Ctrl+C copies ONLY when text is selected; otherwise sends raw ETX (SIGINT).
+  -- Using SendString '\x03' (not SendKey CTRL+c) to avoid re-entering this same callback.
+  { key='c', mods='CTRL', action=wezterm.action_callback(function(window, pane)
+      local sel = window:get_selection_text_for_pane(pane)
+      if sel and #sel > 0 then
+        window:perform_action(act.CopyTo 'Clipboard', pane)
+        window:perform_action(act.ClearSelection, pane)
+      else
+        window:perform_action(act.SendString '\x03', pane)
+      end
+  end)},
 
   -- ── FONT SIZE ────────────────────────────────────────────────
   { key='=', mods='CTRL', action=act.IncreaseFontSize },

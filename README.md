@@ -366,6 +366,8 @@ Enter with `LEADER + [`, exit with `q` or `Esc`.
 |-----------|--------|
 | `CTRL+Shift+C` | Copy to clipboard |
 | `CTRL+Shift+V` | Paste from clipboard |
+| `CTRL+C` | Smart copy — copies to clipboard when text is selected; otherwise sends `SIGINT` (interrupts running command) |
+| `CTRL+V` | Paste from clipboard (also enables Beeftext / text-expander combos that send `CTRL+V`) |
 | `LEADER + V` | **Safe paste** — checks clipboard for dangerous patterns (`rm -rf`, `DROP TABLE`, etc.) and prompts for confirmation before pasting |
 | `LEADER + Shift+C` | **Capture viewport** — copies the full visible pane text to the clipboard |
 | Right-click | Paste (mouse shortcut) |
