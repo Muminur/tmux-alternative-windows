@@ -401,7 +401,7 @@ config.leader = { key = 'b', mods = 'CTRL', timeout_milliseconds = 2000 }
 --     - Named restore:  LEADER + Ctrl+L  (fuzzy-pick from saved names)
 --     - Named delete:   LEADER + Ctrl+D  (fuzzy-pick and delete)
 --     - Manual restore: LEADER + Ctrl+R
---     - Auto-save:      every 15 minutes (AUTOSAVE_SECS)
+--     - Auto-save:      every 5 minutes (AUTOSAVE_SECS); also on startup
 --     - Auto-restore:   on mux startup if a save file exists
 --
 --   Save file: %USERPROFILE%\.wezterm_sessions\last.json
@@ -410,7 +410,7 @@ config.leader = { key = 'b', mods = 'CTRL', timeout_milliseconds = 2000 }
 
 local SESSION_DIR   = wezterm.home_dir .. '/.wezterm_sessions'
 local SESSION_FILE  = SESSION_DIR .. '/last.json'
-local AUTOSAVE_SECS = 15 * 60   -- 15 minutes, matching tmux-continuum default
+local AUTOSAVE_SECS = 5 * 60    -- 5 minutes; baseline save also written at startup
 
 local last_save_time = nil  -- for status-bar SAVED indicator
 
@@ -2480,15 +2480,15 @@ wezterm.on('update-status', function(window, pane)
         { Text = '  SAVED  ' },
       }
     elseif age > AUTOSAVE_SECS then
-      -- STALE badge: last save was more than 15 min ago
+      -- STALE badge: last save was more than 5 min ago
       left[#left+1] = wezterm.format {
         { Background = { Color = neon.red   } },
         { Foreground = { Color = neon.black } },
         { Attribute  = { Intensity = 'Bold' } },
         { Text = '  STALE  ' },
       }
-    elseif age > 300 then
-      -- Age badge: 5–15 min since last save, show elapsed minutes
+    elseif age > 120 then
+      -- Age badge: 2–5 min since last save, show elapsed minutes
       local mins = math.floor(age / 60)
       left[#left+1] = wezterm.format {
         { Background = { Color = neon.orange } },
@@ -2872,19 +2872,22 @@ wezterm.on('mux-startup', function()
     end
   end
 
-  local tab, left, _ = mux.spawn_window { workspace = 'main', args = shell }
-  tab:set_title('Work')
-  mux.set_active_workspace('main')
-
   if has_session then
-    -- Defer heavy session restore so the GUI client doesn't time out
-    wezterm.time.call_after(2, function()
-      do_restore_session(shell)  -- stats ignored at startup (no window for toast)
+    -- Restore saved session without pre-spawning a blank 'main' workspace.
+    -- Pre-spawning causes do_restore_session to create a second window inside
+    -- the already-existing 'main' workspace; the user would see the blank one.
+    wezterm.time.call_after(0.5, function()
+      do_restore_session(shell)
+      do_save_session()   -- re-baseline last.json after restore
       start_autosave()
     end)
   else
-    -- No meaningful session — create default 2-pane layout immediately
+    -- No meaningful session — create default 'main' 2-pane layout.
+    local tab, left, _ = mux.spawn_window { workspace = 'main', args = shell }
+    tab:set_title('Work')
+    mux.set_active_workspace('main')
     left:split { direction = 'Right', size = 0.5, args = shell }
+    do_save_session()     -- write last.json immediately so next launch can restore
     start_autosave()
   end
 end)

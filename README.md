@@ -91,7 +91,7 @@ tmux requires WSL or Cygwin on Windows — it is a Linux tool bolted onto Window
 | Pane splitting | Yes | Yes |
 | Persistent sessions | Yes | Yes |
 | Named session save/restore | tmux-resurrect plugin | **Built-in** |
-| Auto-save every 15 min | tmux-continuum plugin | **Built-in** |
+| Auto-save every 5 min | tmux-continuum plugin | **Built-in** |
 | Vim-style copy mode | Yes | Yes |
 | Named workspaces / sessions | Yes | Yes |
 | SSH remote sessions | Yes | Yes |
@@ -159,7 +159,7 @@ This config implements the same session persistence policy as the popular tmux p
 |------------|-------------------|
 | `tmux-resurrect` — manual save/restore | `LEADER + Ctrl+S` / `LEADER + Ctrl+R` |
 | `tmux-resurrect` — named sessions | `LEADER + Ctrl+N` / `LEADER + Ctrl+L` |
-| `tmux-continuum` — auto-save every 15 min | Built-in auto-save timer |
+| `tmux-continuum` — auto-save every 5 min | Built-in auto-save timer |
 | `tmux-continuum` — auto-restore on start | Auto-restores on WezTerm startup |
 
 **What is saved:**
@@ -201,7 +201,7 @@ On startup:
      (restores to the active workspace that was open when last saved)
   2. Otherwise → create default 'main' workspace with 2-pane layout
 
-Every 15 minutes:
+Every 5 minutes:
   Auto-save all workspaces to last.json
 
 LEADER + Ctrl+S:
@@ -228,8 +228,8 @@ The status bar is split into two sides:
 | `CAPTURED` | Blue | Pane output was just captured to file (auto-clears after 30 s) |
 | `FREEZE` | Purple | Pane view is scroll-locked (process continues running) |
 | `SAVED` | Green | Session was saved (shows for 30 s) |
-| `⏱ Nm` | Orange | Session age 5–15 min since last save |
-| `STALE` | Red | Session age >15 min since last save |
+| `⏱ Nm` | Orange | Session age 2–5 min since last save |
+| `STALE` | Red | Session age >5 min since last save |
 | `Np` | Yellow | Number of panes in active tab |
 | `[label]` | Cyan | Custom pane label (set with `LEADER+.`; hidden when no label is set) |
 | `DEAD` | Red | Active pane's process has exited |
@@ -479,7 +479,7 @@ WezTerm includes a built-in workspace system for organising your terminal sessio
 | Say **Yes** to "kill all panes?" | Processes are killed, session is gone | No |
 | `CTRL+D` in a shell | Exits that shell, closes that pane only | That pane lost |
 
-**Rule of thumb:** Use `LEADER + d` to quit — it auto-saves the session and prompts for confirmation. Auto-save runs every 15 minutes, but quitting via `LEADER + d` guarantees nothing is lost.
+**Rule of thumb:** Use `LEADER + d` to quit — it auto-saves the session and prompts for confirmation. Auto-save runs every 5 minutes, but quitting via `LEADER + d` guarantees nothing is lost.
 
 ### Session Persistence FAQ
 
@@ -493,7 +493,7 @@ No — terminal output and running processes are not saved. This matches the beh
 
 **Q: How often does auto-save run?**
 
-Every 15 minutes, matching tmux-continuum's default interval. The green **SAVED** badge in the status bar confirms each save. To change the interval, edit `AUTOSAVE_SECS` in `wezterm.lua`.
+Every 5 minutes (and immediately on startup). The green **SAVED** badge in the status bar confirms each save. To change the interval, edit `AUTOSAVE_SECS` in `wezterm.lua`.
 
 **Q: What is `prev.json` and how do I restore from it?**
 
@@ -716,7 +716,7 @@ config.leader = { key = 'a', mods = 'CTRL' }  -- change leader key
 config.window_decorations = 'TITLE | RESIZE'
 
 -- Change auto-save interval (seconds)
-local AUTOSAVE_SECS = 10 * 60  -- 10 minutes instead of 15
+local AUTOSAVE_SECS = 2 * 60   -- 2 minutes instead of 5
 
 -- Add SSH servers
 config.ssh_domains = {
