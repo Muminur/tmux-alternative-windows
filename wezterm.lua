@@ -708,10 +708,11 @@ local function do_save_session(dest_file)
   local is_main = (dest_file == nil)
   dest_file = dest_file or SESSION_FILE
 
+  local ok_ws, cur_ws = pcall(mux.get_active_workspace)
   local session = {
     version          = 2,
     saved_at         = os.time(),
-    active_workspace = mux.get_active_workspace(),  -- Enhancement 7
+    active_workspace = ok_ws and cur_ws or nil,
     workspaces       = {},
   }
 
@@ -940,10 +941,12 @@ local function do_restore_session(shell, file_path)
 end
 
 -- ── Auto-save loop  (tmux-continuum style) ───────────────────
+-- pcall wrapper inside the callback prevents a single save error from
+-- permanently breaking the loop (which would happen if do_save_session threw).
 local function start_autosave()
   pcall(function()
     wezterm.time.call_after(AUTOSAVE_SECS, function()
-      do_save_session()
+      pcall(do_save_session)
       start_autosave()
     end)
   end)
@@ -2802,6 +2805,9 @@ wezterm.on('window-config-reloaded', function(window, _)
   pcall(function()
     window:toast_notification('WezTerm', 'Config reloaded', nil, 2000)
   end)
+  -- Restart autosave: config reload destroys the old Lua state and its
+  -- timer callbacks, so the autosave loop must be re-armed here.
+  start_autosave()
 end)
 
 -- ============================================================
